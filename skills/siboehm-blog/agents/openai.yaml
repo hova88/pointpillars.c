@@ -1,0 +1,4 @@
+interface:
+  display_name: "Si Boehm Systems Blog"
+  short_description: "Evidence-led systems performance worklogs"
+  default_prompt: "Use $siboehm-blog to turn this systems codebase into an illustrated, evidence-led technical worklog."

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img">
+  <title>Hybrid CUDA convolution strategy</title><desc>The backbone uses implicit WMMA tiles while multi-head branches reuse one explicit im2col matrix.</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0L9 3 0 6Z" fill="#f59e0b"/></marker><style>.t{fill:#e8edf2;font:21px system-ui}.m{fill:#a7b2c1;font:16px ui-monospace,monospace}.a{stroke:#f59e0b;stroke-width:4;fill:none;marker-end:url(#a)}.d{stroke:#637083;stroke-width:3;stroke-dasharray:9 8;fill:none}</style></defs><rect width="1200" height="675" fill="#0b0d10"/>
+  <text x="55" y="62" class="t" font-size="30">The best convolution strategy changes with reuse</text>
+  <g transform="translate(55 125)"><rect width="520" height="455" rx="22" fill="#11151b" stroke="#22d3ee" stroke-width="3"/><text x="35" y="48" class="t" font-size="26">Backbone: implicit tiles</text><text x="35" y="78" class="m">large co · each activation transform is consumed once</text>
+    <rect x="45" y="120" width="170" height="130" fill="#123442" stroke="#22d3ee" stroke-width="3"/><text x="130" y="165" text-anchor="middle" class="t">NCHW input</text><text x="130" y="198" text-anchor="middle" class="m">fp32</text>
+    <path d="M215 185H300" class="a"/><rect x="300" y="105" width="170" height="160" fill="#321842" stroke="#a855f7" stroke-width="3"/><text x="385" y="148" text-anchor="middle" class="t">shared tile</text><text x="385" y="178" text-anchor="middle" class="m">B: 16×16 fp16</text><text x="385" y="208" text-anchor="middle" class="m">A: 4 warp tiles</text><text x="385" y="238" text-anchor="middle" class="m">≈6.5 KiB</text>
+    <path d="M385 265V335" class="a"/><rect x="250" y="335" width="270" height="76" rx="14" fill="#233414" stroke="#84cc16" stroke-width="3"/><text x="385" y="367" text-anchor="middle" class="t">4 warps → WMMA</text><text x="385" y="394" text-anchor="middle" class="m">64 output channels / block</text>
+  </g>
+  <g transform="translate(625 125)"><rect width="520" height="455" rx="22" fill="#11151b" stroke="#f59e0b" stroke-width="3"/><text x="35" y="48" class="t" font-size="26">Heads: explicit and reused</text><text x="35" y="78" class="m">same shared feature feeds 36 middle convolutions</text>
+    <rect x="45" y="120" width="180" height="105" fill="#123442" stroke="#22d3ee" stroke-width="3"/><text x="135" y="165" text-anchor="middle" class="t">shared feature</text><text x="135" y="195" text-anchor="middle" class="m">64×128×128</text>
+    <path d="M225 173H305" class="a"/><rect x="305" y="105" width="170" height="135" fill="#3c2910" stroke="#f59e0b" stroke-width="3"/><text x="390" y="150" text-anchor="middle" class="t">im2col once</text><text x="390" y="180" text-anchor="middle" class="m">576×16,384</text><text x="390" y="210" text-anchor="middle" class="m">18 MiB fp16</text>
+    <path d="M390 240V285" class="a"/>
+    <g fill="#233414" stroke="#84cc16" stroke-width="2"><rect x="55" y="300" width="125" height="65"/><rect x="198" y="300" width="125" height="65"/><rect x="341" y="300" width="125" height="65"/><rect x="198" y="382" width="125" height="48"/></g>
+    <text x="117" y="339" text-anchor="middle" class="m">head 0</text><text x="260" y="339" text-anchor="middle" class="m">head 1</text><text x="403" y="339" text-anchor="middle" class="m">… head 5</text><text x="260" y="413" text-anchor="middle" class="m">× 6 branches</text>
+    <path d="M390 285C330 270 160 270 117 300M390 285C350 280 290 280 260 300M390 285C420 280 430 285 403 300" class="d"/>
+  </g>
+  <text x="55" y="630" class="m">Negative result preserved: fully implicit heads repeated the same transform and lost to the hybrid path.</text>
+</svg>

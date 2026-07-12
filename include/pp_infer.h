@@ -10,7 +10,7 @@ extern "C" {
 enum { PP_OUT_H=128,PP_OUT_W=128,PP_HEADS=6,PP_BRANCHES=6 };
 enum { PP_BRANCH_CLS,PP_BRANCH_REG,PP_BRANCH_HEIGHT,PP_BRANCH_SIZE,PP_BRANCH_ANGLE,PP_BRANCH_VELO };
 typedef struct {float *data;size_t floats;} pp_raw_output;
-typedef struct {double pfn_ms,scatter_ms,backbone_ms,heads_ms,total_ms;size_t workspace_bytes;} pp_profile;
+typedef struct {double pfn_ms,scatter_ms,backbone_ms,heads_ms,total_ms;size_t workspace_bytes,device_to_host_bytes;} pp_profile;
 int pp_output_alloc(pp_raw_output*out);void pp_output_free(pp_raw_output*out);
 int pp_head_classes(int head);int pp_branch_channels(int head,int branch);
 float *pp_output_branch(const pp_raw_output*out,int head,int branch);

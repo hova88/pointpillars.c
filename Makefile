@@ -1,6 +1,8 @@
 CC ?= cc
 CFLAGS ?= -O3 -march=native -std=c11 -Wall -Wextra -Wpedantic
 CPPFLAGS += -Iinclude
+CFLAGS += -pthread
+LDLIBS += -pthread
 OMP ?= 1
 ifeq ($(OMP),1)
 CFLAGS += -fopenmp
@@ -35,7 +37,7 @@ build/pointpillars_cuda: src/main.c src/model.c src/voxel.c src/infer_cpu.c src/
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/decode.c -o build/cuda/decode.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/tui.c -o build/cuda/tui.o
 	$(NVCC) $(CPPFLAGS) -O3 -arch=$(CUDA_ARCH) -c src/infer_cuda.cu -o build/cuda/infer_cuda.o
-	$(NVCC) -Xcompiler -fopenmp build/cuda/*.o -lgomp -lm -o $@
+	$(NVCC) -Xcompiler -fopenmp -Xcompiler -pthread build/cuda/*.o -lgomp -lm -o $@
 
 build/test_model: src/model.c tests/test_model.c include/pp_model.h
 	mkdir -p build
@@ -49,10 +51,15 @@ build/test_decode: src/decode.c src/infer_cpu.c src/model.c tests/test_decode.c 
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/decode.c src/infer_cpu.c src/model.c tests/test_decode.c -lm $(LDLIBS) -o $@
 
-test: model build/pointpillars build/test_model build/test_voxel build/test_decode
+build/test_tui: src/tui.c tests/test_tui.c include/pp_tui.h
+	mkdir -p build
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/tui.c tests/test_tui.c -lm $(LDLIBS) -o $@
+
+test: model build/pointpillars build/test_model build/test_voxel build/test_decode build/test_tui
 	./build/test_model $(MODEL)
 	./build/test_voxel
 	./build/test_decode
+	./build/test_tui
 
 portable-test:
 	$(MAKE) clean

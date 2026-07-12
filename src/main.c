@@ -15,6 +15,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <pthread.h>
 
 static int write_outputs(const char *path, const pp_raw_output *o) {
     FILE *f=fopen(path,"wb"); if(!f)return 0;
@@ -32,10 +33,23 @@ static void usage(const char *p) {
     fprintf(stderr,"usage: %s inspect MODEL.ppw\n       %s infer MODEL.ppw POINTS.bin [OUTPUT.ppout] [stride=5]\n",p,p);
 }
 static int compare_names(const void*a,const void*b){return strcmp(*(char*const*)a,*(char*const*)b);}
+static double monotonic_ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1e3+t.tv_nsec/1e6;}
+
+typedef struct {pp_pillars pillars;pp_voxel_stats stats;size_t index;double prep_ms;int state;char error[256];} prep_slot;
+typedef struct {char **names;size_t count,next;int stop,started,depth;pthread_t thread;pthread_mutex_t lock;pthread_cond_t changed;prep_slot slot[2];} prep_pipe;
+
+static void *prepare_frames(void *arg){prep_pipe*p=arg;for(;;){pthread_mutex_lock(&p->lock);if(p->stop||p->next==p->count){pthread_mutex_unlock(&p->lock);return NULL;}size_t i=p->next++;prep_slot*s=&p->slot[i%(size_t)p->depth];while(s->state&&!p->stop)pthread_cond_wait(&p->changed,&p->lock);if(p->stop){pthread_mutex_unlock(&p->lock);return NULL;}s->state=1;s->index=i;pthread_mutex_unlock(&p->lock);
+ float*points=NULL;size_t n=0;double begin=monotonic_ms();int ok=pp_load_points(p->names[i],5,&points,&n,s->error,sizeof s->error)&&pp_voxelize(points,n,5,&s->pillars,&s->stats);free(points);s->prep_ms=monotonic_ms()-begin;
+ pthread_mutex_lock(&p->lock);s->state=ok?2:3;pthread_cond_broadcast(&p->changed);pthread_mutex_unlock(&p->lock);if(!ok)return NULL;}}
+static int prep_pipe_start(prep_pipe*p,char**names,size_t count,int depth){memset(p,0,sizeof(*p));p->names=names;p->count=count;p->depth=depth;if(pthread_mutex_init(&p->lock,NULL))return 0;if(pthread_cond_init(&p->changed,NULL)){pthread_mutex_destroy(&p->lock);return 0;}for(int i=0;i<depth;i++)if(!pp_pillars_alloc(&p->slot[i].pillars))goto fail;if(pthread_create(&p->thread,NULL,prepare_frames,p))goto fail;p->started=1;return 1;
+fail:pp_pillars_free(&p->slot[0].pillars);pp_pillars_free(&p->slot[1].pillars);pthread_cond_destroy(&p->changed);pthread_mutex_destroy(&p->lock);return 0;}
+static prep_slot *prep_pipe_get(prep_pipe*p,size_t i){prep_slot*s=&p->slot[i%(size_t)p->depth];pthread_mutex_lock(&p->lock);while(s->state<2)pthread_cond_wait(&p->changed,&p->lock);pthread_mutex_unlock(&p->lock);return s;}
+static void prep_pipe_release(prep_pipe*p,prep_slot*s){pthread_mutex_lock(&p->lock);s->state=0;pthread_cond_broadcast(&p->changed);pthread_mutex_unlock(&p->lock);}
+static void prep_pipe_end(prep_pipe*p){if(p->started){pthread_mutex_lock(&p->lock);p->stop=1;pthread_cond_broadcast(&p->changed);pthread_mutex_unlock(&p->lock);pthread_join(p->thread,NULL);}pp_pillars_free(&p->slot[0].pillars);pp_pillars_free(&p->slot[1].pillars);pthread_cond_destroy(&p->changed);pthread_mutex_destroy(&p->lock);}
 
 int main(int argc,char **argv){
     if(argc<3){usage(argv[0]);return 2;}
-    pp_model m;char error[256];
+    pp_model m;char error[256]={0};
     if(!pp_model_open(&m,argv[2],error,sizeof error)){fprintf(stderr,"error: %s\n",error);return 1;}
     if(!strcmp(argv[1],"inspect")){
         printf("PointPillars model: %u tensors, %.2f MiB\n",m.count,m.mapping_bytes/1048576.0);
@@ -46,29 +60,56 @@ int main(int argc,char **argv){
     int is_batch=!strcmp(argv[1],"batch")||!strcmp(argv[1],"batch-cuda");
     int is_bench=!strcmp(argv[1],"bench")||!strcmp(argv[1],"bench-cuda");
     int use_cuda=!strcmp(argv[1],"infer-cuda")||!strcmp(argv[1],"tui-cuda")||!strcmp(argv[1],"bench-cuda")||!strcmp(argv[1],"batch-cuda");
+    int compact_cuda=use_cuda&&!getenv("PP_CUDA_RAW_DECODE");
     if((strcmp(argv[1],"infer")&&!use_cuda&&!is_tui&&!is_bench&&!is_batch)||argc<4||(is_batch&&argc<5)){usage(argv[0]);pp_model_close(&m);return 2;}
 #ifndef PP_WITH_CUDA
     if(use_cuda){fprintf(stderr,"error: this binary was built without CUDA\n");pp_model_close(&m);return 1;}
 #endif
-    if(is_tui||is_batch){
+    if(is_tui||is_batch){int directory_ok=1;
       if(is_batch&&mkdir(argv[4],0755)&&errno!=EEXIST){perror(argv[4]);pp_model_close(&m);return 1;}
-      DIR*d=opendir(argv[3]);if(!d){perror(argv[3]);pp_model_close(&m);return 1;}size_t capn=256,nf=0;char**names=malloc(capn*sizeof(*names));struct dirent*de;
+      DIR*d=opendir(argv[3]);if(!d){perror(argv[3]);pp_model_close(&m);return 1;}size_t capn=256,nf=0;char**names=malloc(capn*sizeof(*names));struct dirent*de;if(!names){closedir(d);pp_model_close(&m);return 1;}
       while((de=readdir(d))){
-        if(strstr(de->d_name,".bin")){if(nf==capn){capn*=2;names=realloc(names,capn*sizeof(*names));}size_t z=strlen(argv[3])+strlen(de->d_name)+2;names[nf]=malloc(z);snprintf(names[nf++],z,"%s/%s",argv[3],de->d_name);}
+        size_t ln=strlen(de->d_name);if(ln>=4&&!strcmp(de->d_name+ln-4,".bin")){if(nf==capn){capn*=2;char**grown=realloc(names,capn*sizeof(*names));if(!grown){closedir(d);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}names=grown;}size_t z=strlen(argv[3])+ln+2;names[nf]=malloc(z);if(!names[nf]){closedir(d);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}snprintf(names[nf++],z,"%s/%s",argv[3],de->d_name);}
       }
       closedir(d);
       qsort(names,nf,sizeof(*names),compare_names);
-      pp_raw_output ro;if(!pp_output_alloc(&ro)){pp_model_close(&m);return 1;}for(size_t fi=0;fi<nf;fi++){float*qp=NULL;size_t qn=0;pp_pillars vp;pp_voxel_stats vs;pp_profile pr;pp_detections dd;
-        if(!pp_load_points(names[fi],5,&qp,&qn,error,sizeof error)||!pp_pillars_alloc(&vp)||!pp_voxelize(qp,qn,5,&vp,&vs)||!pp_detections_alloc(&dd,1000))break;
+      if(!nf){fprintf(stderr,"error: no .bin point files in %s\n",argv[3]);free(names);pp_model_close(&m);return 1;}
+      pp_raw_output ro={0};if(!compact_cuda&&!pp_output_alloc(&ro)){pp_model_close(&m);return 1;}
+      if(is_tui){
+       pp_tui_state ui;if(!pp_tui_begin(&ui)){fprintf(stderr,"error: TUI requires an interactive terminal\n");pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}
+       pp_pillars vp={0};pp_detections dd={0};
+       if(!pp_pillars_alloc(&vp)||!pp_detections_alloc(&dd,1000)){pp_tui_end();pp_pillars_free(&vp);pp_detections_free(&dd);pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}
+       size_t fi=0;int running=nf>0;
+       while(running){float*qp=NULL;size_t qn=0;pp_voxel_stats vs;pp_profile pr;
+        if(!pp_load_points(names[fi],5,&qp,&qn,error,sizeof error)||!pp_voxelize(qp,qn,5,&vp,&vs)){directory_ok=0;running=0;free(qp);break;}
         struct timespec ta,tb;clock_gettime(CLOCK_MONOTONIC,&ta);
 #ifdef PP_WITH_CUDA
-        int good=use_cuda?pp_infer_cuda(&m,&vp,&ro,&pr,error,sizeof error):pp_infer_cpu(&m,&vp,&ro,&pr,error,sizeof error);
+        int good=use_cuda?(compact_cuda?pp_infer_cuda_detect(&m,&vp,&dd,.1f,.2f,&pr,error,sizeof error):pp_infer_cuda(&m,&vp,&ro,&pr,error,sizeof error)):pp_infer_cpu(&m,&vp,&ro,&pr,error,sizeof error);
 #else
         int good=pp_infer_cpu(&m,&vp,&ro,&pr,error,sizeof error);
 #endif
-        clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6;if(good)good=pp_decode(&ro,.1f,.2f,&dd);if(!good){fprintf(stderr,"%s\n",error);break;}if(is_tui)pp_tui_render(qp,qn,5,&dd,fi,elapsed,use_cuda?"CUDA":"CPU");else{const char*base=strrchr(names[fi],'/');base=base?base+1:names[fi];char path[2048];snprintf(path,sizeof path,"%s/%s.json",argv[4],base);good=write_detections(path,&dd);fprintf(stderr,"[%zu/%zu] %s: %zu boxes %.2f ms\n",fi+1,nf,base,dd.count,elapsed);}pp_detections_free(&dd);pp_pillars_free(&vp);free(qp);if(!good)break;}
-      if(is_tui)printf("\033[?25h\033[0m\n");
-      pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 0;
+        clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6;if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);
+        if(!good){directory_ok=0;running=0;free(qp);break;}
+        pp_tui_update_tracks(&ui,&dd,fi);
+        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,use_cuda?"CUDA":"CPU",&ui);
+        int action;
+        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,use_cuda?"CUDA":"CPU",&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
+        free(qp);
+        if(action==PP_TUI_QUIT)running=0;else if(action==PP_TUI_PREV)fi=fi?fi-1:nf-1;else fi=(fi+1)%nf;
+       }
+       pp_tui_end();pp_pillars_free(&vp);pp_detections_free(&dd);if(!running&&error[0])fprintf(stderr,"error: %s\n",error);
+      } else {prep_pipe pipe;pp_detections dd={0};int depth=getenv("PP_NO_PREFETCH")?1:2,pipeline=prep_pipe_start(&pipe,names,nf,depth);
+       if(!pipeline||!pp_detections_alloc(&dd,1000))directory_ok=0;
+       else for(size_t fi=0;fi<nf;fi++){pp_profile pr;prep_slot*s=prep_pipe_get(&pipe,fi);if(s->state==3){fprintf(stderr,"error: %s\n",s->error);directory_ok=0;break;}
+        struct timespec ta,tb;clock_gettime(CLOCK_MONOTONIC,&ta);
+#ifdef PP_WITH_CUDA
+        int good=use_cuda?(compact_cuda?pp_infer_cuda_detect(&m,&s->pillars,&dd,.1f,.2f,&pr,error,sizeof error):pp_infer_cuda(&m,&s->pillars,&ro,&pr,error,sizeof error)):pp_infer_cpu(&m,&s->pillars,&ro,&pr,error,sizeof error);
+#else
+        int good=pp_infer_cpu(&m,&s->pillars,&ro,&pr,error,sizeof error);
+#endif
+        clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6,decode0=monotonic_ms();if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);double decode_ms=compact_cuda?0:monotonic_ms()-decode0;if(!good){fprintf(stderr,"%s\n",error);directory_ok=0;prep_pipe_release(&pipe,s);break;}const char*base=strrchr(names[fi],'/');base=base?base+1:names[fi];char path[2048];snprintf(path,sizeof path,"%s/%s.json",argv[4],base);good=write_detections(path,&dd);fprintf(stderr,"[%zu/%zu] %s: %zu boxes infer %.2f ms prep %.2f ms decode %.2f ms d2h %.1f KiB\n",fi+1,nf,base,dd.count,elapsed,s->prep_ms,decode_ms,pr.device_to_host_bytes/1024.0);prep_pipe_release(&pipe,s);if(!good){directory_ok=0;break;}}
+       pp_detections_free(&dd);if(pipeline)prep_pipe_end(&pipe);}
+      pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return directory_ok?0:1;
     }
     size_t stride=argc>5?(size_t)strtoul(argv[5],NULL,10):5,count=0;float *points=NULL;
     if(!pp_load_points(argv[3],stride,&points,&count,error,sizeof error)){fprintf(stderr,"error: %s\n",error);pp_model_close(&m);return 1;}

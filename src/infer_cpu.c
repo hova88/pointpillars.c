@@ -317,7 +317,7 @@ bad:
 }
 #endif
 
-static int named3(const pp_model*m,const char*name,const float*x,float*y,int ci,int co,int h,int w,int stride,int relu,char*e,size_t cap){char nw[48],nb[48];const float*wt,*bias;snprintf(nw,sizeof nw,"%s.weight",name);snprintf(nb,sizeof nb,"%s.bias",name);if(!get4(m,nw,co,ci,3,3,&wt)||!get1(m,nb,co,&bias))return fail(e,cap,"invalid tensor %s",name);if(relu)conv3_relu(x,y,wt,bias,ci,co,h,w,stride);else conv3_plain(x,y,wt,bias,ci,co,h,w);return 1;}
+static int named3(const pp_model*m,const char*name,const float*x,float*y,int ci,int co,int h,int w,int stride,int relu,char*e,size_t cap){char nw[64],nb[64];const float*wt,*bias;snprintf(nw,sizeof nw,"%s.weight",name);snprintf(nb,sizeof nb,"%s.bias",name);if(!get4(m,nw,co,ci,3,3,&wt)||!get1(m,nb,co,&bias))return fail(e,cap,"invalid tensor %s",name);if(relu)conv3_relu(x,y,wt,bias,ci,co,h,w,stride);else conv3_plain(x,y,wt,bias,ci,co,h,w);return 1;}
 
 int pp_infer_cpu(const pp_model*m,const pp_pillars*p,pp_raw_output*out,pp_profile*prof,char*error,size_t cap){
  if(!m||!p||!out||!out->data)return fail(error,cap,"invalid inference arguments");

@@ -17,27 +17,30 @@ int pp_pillars_alloc(pp_pillars *p) {
     p->features = (float *)calloc(nf, sizeof(float));
     p->coords = (int32_t *)calloc((size_t)PP_MAX_PILLARS * 4, sizeof(int32_t));
     p->point_count = (uint8_t *)calloc(PP_MAX_PILLARS, 1);
-    if (p->features && p->coords && p->point_count) return 1;
+    p->grid = (int32_t *)malloc((size_t)PP_GRID_X * PP_GRID_Y * sizeof(int32_t));
+    if (p->features && p->coords && p->point_count && p->grid) {
+        for (size_t i = 0; i < (size_t)PP_GRID_X * PP_GRID_Y; ++i) p->grid[i] = -1;
+        return 1;
+    }
     pp_pillars_free(p); return 0;
 }
 
 void pp_pillars_free(pp_pillars *p) {
     if (!p) return;
-    free(p->features); free(p->coords); free(p->point_count);
+    free(p->features); free(p->coords); free(p->point_count); free(p->grid);
     memset(p, 0, sizeof(*p));
 }
 
 int pp_voxelize(const float *points, size_t count, size_t stride,
                 pp_pillars *out, pp_voxel_stats *stats) {
-        if (!points || !out || !out->features || !out->coords ||
-        !out->point_count || stride != 5) return 0;
+    if (!points || !out || !out->features || !out->coords ||
+        !out->point_count || !out->grid || stride != 5) return 0;
     pp_voxel_stats local = {0};
-    int32_t *grid = (int32_t *)malloc((size_t)PP_GRID_X * PP_GRID_Y * sizeof(int32_t));
-    if (!grid) return 0;
-    for (size_t i = 0; i < (size_t)PP_GRID_X * PP_GRID_Y; ++i) grid[i] = -1;
-    memset(out->features, 0, (size_t)PP_MAX_PILLARS * PP_MAX_POINTS * PP_POINT_FEATURES * sizeof(float));
-    memset(out->coords, 0, (size_t)PP_MAX_PILLARS * 4 * sizeof(int32_t));
-    memset(out->point_count, 0, PP_MAX_PILLARS);
+    int32_t *grid = out->grid;
+    for (int pi = 0; pi < out->pillar_count; ++pi) {
+        int iy = out->coords[(size_t)pi * 4 + 2], ix = out->coords[(size_t)pi * 4 + 3];
+        grid[(size_t)iy * PP_GRID_X + ix] = -1;
+    }
     out->pillar_count = 0; local.input_points = count;
 
     for (size_t n = 0; n < count; ++n) {
@@ -52,6 +55,9 @@ int pp_voxelize(const float *points, size_t count, size_t stride,
         if (pi < 0) {
             if (out->pillar_count == PP_MAX_PILLARS) { ++local.dropped_pillars; continue; }
             pi = out->pillar_count++; grid[cell] = pi;
+            memset(out->features + (size_t)pi * PP_MAX_POINTS * PP_POINT_FEATURES, 0,
+                   (size_t)PP_MAX_POINTS * PP_POINT_FEATURES * sizeof(float));
+            out->point_count[pi] = 0;
             int32_t *c = out->coords + (size_t)pi * 4;
             c[0] = 0; c[1] = 0; c[2] = iy; c[3] = ix;
         }
@@ -80,7 +86,6 @@ int pp_voxelize(const float *points, size_t count, size_t stride,
             f[8] = f[0] - cx; f[9] = f[1] - cy; f[10] = f[2] - cz;
         }
     }
-    free(grid);
     if (stats) *stats = local;
     return 1;
 }

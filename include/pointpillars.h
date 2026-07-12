@@ -13,9 +13,10 @@ enum {
 };
 
 typedef struct {
-    float *features;       /* [PP_MAX_PILLARS, PP_MAX_POINTS, 10] */
+    float *features;       /* [PP_MAX_PILLARS, PP_MAX_POINTS, 11] */
     int32_t *coords;       /* [PP_MAX_PILLARS, 4] = batch,z,y,x */
     uint8_t *point_count;  /* [PP_MAX_PILLARS] */
+    int32_t *grid;         /* persistent [PP_GRID_Y, PP_GRID_X] sparse index */
     int32_t pillar_count;
 } pp_pillars;
 

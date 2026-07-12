@@ -16,6 +16,9 @@ int main(void) {
         fabsf(a[7] + .1f) > 1e-5f) return 3;
     if (fabsf(a[3]-.5f)>1e-7f||fabsf(a[4]-.1f)>1e-7f) return 5;
     if (p.coords[1] != 0 || p.coords[0] != 0) return 4;
+    const float next[][5] = {{20, -10, 1, .3f, .4f}};
+    if (!pp_voxelize(&next[0][0], 1, 5, &p, &s) || p.pillar_count != 1 ||
+        p.point_count[0] != 1 || p.features[0] != 20 || p.features[11] != 0) return 6;
     pp_pillars_free(&p);
     puts("voxelizer: ok");
     return 0;

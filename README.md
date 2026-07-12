@@ -67,15 +67,39 @@ PP_CUDA_PRECISE=1 ./build/pointpillars_cuda infer-cuda \
 ./build/pointpillars_cuda bench-cuda nuscenes_multihead.ppw "$frame" 10
 ```
 
+Directory batch inference overlaps loading and voxelization of the next frame
+with the current inference using a bounded two-frame pipeline. Set
+`PP_NO_PREFETCH=1` to disable overlap for memory-constrained systems or A/B
+measurements; this saves one roughly 27 MiB host-side pillar workspace.
+
+CUDA batch and TUI modes compact score-qualified candidates on the device and
+run the canonical C box decode/NMS on their original logits and regression
+codes. On the mini split this reduces device-to-host traffic from 15,104 KiB to
+about 10.5 KiB per frame while remaining byte-identical to full-raw detection
+output across 81 checked frames. `PP_CUDA_RAW_DECODE=1` restores full tensor
+transfer for differential testing. The bounded compact buffer adds 32.5 MiB of
+device capacity only when this path is used.
+
 Measured on the current i5-14600KF / RTX 4060 Ti system with a 328k-point ten-sweep frame:
 
 | backend | warm network latency |
 |---|---:|
 | CPU AVX2/FMA, 16 threads | ~603 ms |
 | CUDA precise FP32 | ~604 ms |
-| CUDA FP16 WMMA fast path | ~76 ms |
+| CUDA hybrid implicit/explicit WMMA fast path | ~55 ms |
 
-The precise CUDA and CPU outputs match the direct PyTorch checkpoint oracle with maximum absolute error below `7.4e-4`. The fast path is explicitly approximate; on the reference frame it retains the same 66 decoded detections.
+The precise CUDA and CPU outputs match the direct PyTorch checkpoint oracle. The
+fast path is explicitly approximate; the current reference-frame oracle reports
+maximum absolute error `8.66e-4` and `allclose=True`.
+
+The default CUDA path uses implicit WMMA for the backbone and a reused explicit
+im2col for the multi-head branches. Set `PP_CUDA_EXPLICIT=1` for the older fully
+explicit path. The hybrid path uses about 270.5 MiB of persistent device memory,
+down from roughly 414.5 MiB for the explicit workspace.
+Stage profiling uses CUDA events so PFN, backbone, and heads remain on one
+continuous stream without host-side device barriers. Set
+`PP_CUDA_SYNC_STAGES=1` to restore the older synchronization points for A/B or
+driver diagnosis.
 
 ## Live terminal point cloud
 
@@ -85,6 +109,18 @@ The precise CUDA and CPU outputs match the direct PyTorch checkpoint oracle with
 ```
 
 Each terminal character carries a 2×4 Braille pixel block. Rotated boxes are overlaid in ANSI color. No curses or graphical window is required.
+The viewer runs in an alternate screen and restores the terminal on exit. Press
+`Space` to pause, arrows or `p`/`n` to step frames, `WASD` to pan, `z`/`e` to
+rotate, `+`/`-` to zoom, `0`–`9` to toggle nuScenes classes, `,`/`.` to adjust
+the score threshold, `[`/`]` to inspect detections, `b`/`v` to toggle box and
+velocity layers, `r` to reset the view, and `q` to quit. Detection classes use
+stable colors and the selected target shows pose, dimensions, yaw, velocity,
+and confidence in a status panel. `g` toggles the 10 m metric grid and `t`
+toggles bounded cross-frame trails. Trails use same-class nearest-neighbor
+association and reset automatically after reverse navigation or a frame jump.
+The selected-object panel reports its bounded local track ID and history age.
+Paused views redraw on terminal resize; interrupt, quit, suspend, and hangup
+signals all leave through the terminal-restoration path.
 
 ## Official nuScenes evaluation
 

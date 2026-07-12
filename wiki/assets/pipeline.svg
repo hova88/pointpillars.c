@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img">
+  <title>PointPillars end-to-end execution pipeline</title>
+  <desc>Ten-sweep points become sparse pillars, a dense BEV canvas, backbone features, multi-head predictions, compact candidates, and decoded boxes.</desc>
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#f59e0b"/></marker>
+    <pattern id="h" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><line x1="0" y1="0" x2="0" y2="8" stroke="#637083" stroke-width="2"/></pattern>
+    <style>.t{fill:#e8edf2;font:22px system-ui}.m{fill:#9aa6b6;font:16px ui-monospace,monospace}.b{fill:#11151b;stroke-width:3;rx:18}.arrow{fill:none;stroke:#f59e0b;stroke-width:4;marker-end:url(#a)}.note{fill:#0b0d10;stroke:#637083;stroke-width:2;stroke-dasharray:8 8;rx:14}</style>
+  </defs>
+  <rect width="1200" height="675" fill="#0b0d10"/>
+  <text x="60" y="68" class="t" font-size="30">One frame, seen as movement of bytes</text>
+  <text x="60" y="99" class="m">orange arrows are material transfers · dashed boxes are bounded workspaces</text>
+  <g transform="translate(45 165)">
+    <rect width="165" height="120" class="b" stroke="#22d3ee"/><text x="82" y="43" text-anchor="middle" class="t">10 sweeps</text><text x="82" y="75" text-anchor="middle" class="m">N × 5 fp32</text><text x="82" y="99" text-anchor="middle" class="m">xyz · i · Δt</text>
+    <path d="M165 60 H220" class="arrow"/>
+    <rect x="220" width="165" height="120" class="b" stroke="#a855f7"/><text x="302" y="43" text-anchor="middle" class="t">Voxelize</text><text x="302" y="75" text-anchor="middle" class="m">≤30k ×20×11</text><text x="302" y="99" text-anchor="middle" class="m">sparse writes</text>
+    <path d="M385 60 H440" class="arrow"/>
+    <rect x="440" width="165" height="120" class="b" stroke="#22d3ee"/><text x="522" y="43" text-anchor="middle" class="t">PFN + scatter</text><text x="522" y="75" text-anchor="middle" class="m">64×512×512</text><text x="522" y="99" text-anchor="middle" class="m">64 MiB BEV</text>
+    <path d="M605 60 H660" class="arrow"/>
+    <rect x="660" width="165" height="120" class="b" stroke="#84cc16"/><text x="742" y="43" text-anchor="middle" class="t">BEV CNN</text><text x="742" y="75" text-anchor="middle" class="m">133.57 GFLOP</text><text x="742" y="99" text-anchor="middle" class="m">CPU / CUDA</text>
+    <path d="M825 60 H880" class="arrow"/>
+    <rect x="880" width="220" height="120" class="b" stroke="#ef4444"/><text x="990" y="43" text-anchor="middle" class="t">6 × 6 branches</text><text x="990" y="75" text-anchor="middle" class="m">236×128×128</text><text x="990" y="99" text-anchor="middle" class="m">14.75 MiB raw</text>
+  </g>
+  <path d="M1035 285 V355 H820" class="arrow"/>
+  <rect x="655" y="355" width="330" height="105" class="b" stroke="#f59e0b"/><text x="820" y="397" text-anchor="middle" class="t">GPU candidate compaction</text><text x="820" y="430" text-anchor="middle" class="m">15,104 KiB → ≈10.5 KiB D2H</text>
+  <path d="M655 408 H560" class="arrow"/>
+  <rect x="285" y="355" width="275" height="105" class="b" stroke="#a855f7"/><text x="422" y="397" text-anchor="middle" class="t">Decode + rotated NMS</text><text x="422" y="430" text-anchor="middle" class="m">canonical pp_box</text>
+  <path d="M422 460 V520" class="arrow"/>
+  <rect x="210" y="520" width="425" height="90" class="note"/><text x="422" y="555" text-anchor="middle" class="t">JSON · nuScenes · ANSI/Braille TUI</text><text x="422" y="584" text-anchor="middle" class="m">one decoded representation, three consumers</text>
+</svg>

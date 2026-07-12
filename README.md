@@ -153,3 +153,12 @@ On the local 81-frame official `mini_val` split, the current fast path measures 
 - One canonical detection representation shared by JSON, official evaluation and TUI.
 
 The Colibri-derived reasoning about residency, offline specialization, validation gates and measured optimization remains installed separately as the `colibri-code-mind` skill.
+
+## Systems performance wiki
+
+The illustrated [PointPillars.c performance wiki](wiki/Home.md) walks the entire
+runtime from its frozen model contract through voxel locality, CPU caches,
+CUDA tensor-core tiling, bounded pipeline residency, compact decode, validation,
+and the interactive terminal renderer. The repository also ships the reusable
+[`siboehm-blog`](skills/siboehm-blog/SKILL.md) skill used to produce and extend
+that publication-ready documentation.

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img">
+  <title>CPU convolution cache and SIMD locality</title>
+  <desc>Eight adjacent x positions are loaded into AVX2 vectors and reused across four output-channel accumulators while output row tiles stay in L1.</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0L9 3 0 6Z" fill="#f59e0b"/></marker><style>.t{fill:#e8edf2;font:21px system-ui}.m{fill:#a7b2c1;font:16px ui-monospace,monospace}.a{stroke:#f59e0b;stroke-width:4;fill:none;marker-end:url(#a)}</style></defs><rect width="1200" height="675" fill="#0b0d10"/>
+  <text x="55" y="62" class="t" font-size="30">One 32-byte input load, four output channels</text><text x="55" y="92" class="m">conv3s1_relu4 · NCHW · AVX2/FMA · static OpenMP ownership</text>
+  <g transform="translate(70 150)"><text x="0" y="-22" class="t">input row</text>
+    <g stroke="#22d3ee" stroke-width="2" fill="#123442"><rect width="64" height="64"/><rect x="64" width="64" height="64"/><rect x="128" width="64" height="64"/><rect x="192" width="64" height="64"/><rect x="256" width="64" height="64"/><rect x="320" width="64" height="64"/><rect x="384" width="64" height="64"/><rect x="448" width="64" height="64"/></g>
+    <text x="256" y="102" text-anchor="middle" class="m">8 contiguous fp32 = one __m256 = half a 64 B cache line</text>
+  </g>
+  <path d="M330 285V350" class="a"/>
+  <g transform="translate(90 350)"><text x="0" y="-20" class="t">register accumulators</text>
+    <rect width="220" height="72" rx="14" fill="#321842" stroke="#a855f7" stroke-width="3"/><rect x="240" width="220" height="72" rx="14" fill="#321842" stroke="#a855f7" stroke-width="3"/><rect x="480" width="220" height="72" rx="14" fill="#321842" stroke="#a855f7" stroke-width="3"/><rect x="720" width="220" height="72" rx="14" fill="#321842" stroke="#a855f7" stroke-width="3"/>
+    <text x="110" y="44" text-anchor="middle" class="m">oc + 0 · 8 px</text><text x="350" y="44" text-anchor="middle" class="m">oc + 1 · 8 px</text><text x="590" y="44" text-anchor="middle" class="m">oc + 2 · 8 px</text><text x="830" y="44" text-anchor="middle" class="m">oc + 3 · 8 px</text>
+  </g>
+  <g transform="translate(70 505)"><rect width="1060" height="105" rx="18" fill="#11151b" stroke="#84cc16" stroke-width="3"/><text x="35" y="42" class="t">L1-sized output working set</text><text x="35" y="74" class="m">generic path: 8 output rows × 256 columns × 4 B = 8 KiB per output plane tile</text><text x="660" y="42" class="t">Thread ownership</text><text x="660" y="74" class="m">one output-channel group → no false sharing</text></g>
+</svg>

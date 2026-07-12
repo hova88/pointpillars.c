@@ -1,0 +1,9 @@
+build/
+*.ppw
+*.ppout
+__pycache__/
+*.pyc
+*.bin
+core
+ckpts/
+nuscenes_multihead.ppw

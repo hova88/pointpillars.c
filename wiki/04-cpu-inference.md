@@ -1,94 +1,138 @@
-# The CPU Path: Cache Lines Before Clever Intrinsics
+# The CPU Path: Reuse Before Representation
 
-> **Outcome.** The complete C backend evaluates the same 133.57-GFLOP graph in 591.99 ms on 16 threads of an i5-14600KF. The important choices are NCHW ownership by output channel, eight-row L1 working sets, four-channel AVX2 reuse, static OpenMP scheduling, and a scalar boundary path that keeps the vector interior simple.
+> **Outcome.** The native AVX2/FMA backend reaches a 468.816 ms warm median at the reproducible 16-thread setting and 410.406 ms at the host-tuned 32-worker setting. A pinned GGML hybrid reaches 458.973 ms at 16 threads, but loses at 32. The winning design is therefore not “use one library everywhere”; it is bounded NCHW storage plus per-shape kernel selection backed by scalar oracles.
 
 ![AVX2 input reuse and output ownership](assets/cpu-locality.svg)
 
-*Eight adjacent x positions are reused across four output-channel accumulators; generic row tiles keep partial outputs close to L1.*
+*Eight adjacent x positions are reused across eight output-channel accumulators. Output ownership keeps reductions private and creates enough `(channel_block,row)` tasks for OpenMP.*
 
-## First account for memory
+## Start with the lifetime graph
 
-The CPU workspace in [`pp_infer_cpu`](../src/infer_cpu.c) contains:
+The CPU workspace contains:
 
-| Buffer | Size on the 7,868-pillar fixture |
+| Buffer | Capacity |
 |---|---:|
-| PFN pillar output `64 × P` | 1.92 MiB |
-| Scatter `64 × 512 × 512` | 64 MiB |
-| Two stage buffers | 32 MiB |
-| Three upsample buffers | 24 MiB |
-| Concatenated feature | 24 MiB |
-| Shared + middle scratch | 8 MiB |
-| **Total** | **about 153.9 MiB** |
+| PFN pillar output `64×P` | 1.92 MiB |
+| Scatter `64×512×512` | 64.00 MiB |
+| Two stage buffers | 32.00 MiB |
+| Deblock output / concatenated feature arena | 24.00 MiB |
+| Shared + middle scratch | 8.00 MiB |
+| **Total** | **129.92 MiB** |
 
-The 23.19 MiB model mapping and 14.75 MiB raw output live outside that reported workspace. The stage buffers ping-pong because consecutive convolutions do not need older activations. This is lifetime planning in plain C: two buffers replace sixteen layer-specific allocations.
+The 23.19 MiB read-only model mapping and 14.75 MiB raw host output are separate from the reported inference workspace. Stage activations ping-pong because each convolution kills its predecessor. The three deblocks write directly into consecutive thirds of the `384×128×128` shared-input arena, so concatenation is a layout decision rather than a 24 MiB allocation and copy.
 
-## PFN: small reduction, awkward layout
+That alias was the first important optimization: it reduced both CPU and CUDA memory and removed cache/device traffic before touching arithmetic.
 
-OpenMP assigns independent `(pillar, output_channel)` pairs. For each pair, the loop evaluates 20 points × 11 features and retains the maximum after ReLU. Input points for one pillar are contiguous, but output is stored channel-major as `pillar[oc * P + pi]` because scatter and later NCHW operations consume channel planes.
+## PFN and scatter are bounded but irregular
 
-The feature weights for one output channel are only 44 bytes and remain hot. The point records are 44 bytes each, sequentially visited. PFN is not the dominant stage: after warmup it is around 2 ms in the measured CPU run.
+PFN assigns independent `(pillar, output_channel)` pairs. Each pair evaluates 20 points × 11 features and retains the ReLU maximum. The 44-byte weight row stays hot, while point records are visited sequentially. On the perf fixture PFN is about 2 ms, not the dominant CPU stage.
 
-## Scatter: sparse writes into a 64 MiB canvas
+Scatter gives each worker an output-channel plane and walks live pillars. There is no cross-thread reduction or false sharing, but the shuffled `(y,x)` destinations have poor spatial locality. Clearing the dense 64 MiB canvas is unavoidable for this dense downstream graph; sparse writes only replace occupied cells.
 
-Each OpenMP iteration owns one output channel, then walks every pillar. Writes within a channel plane jump to `(y, x)` locations determined by the shuffled points. There is no false sharing between output-channel owners, but spatial writes have poor locality. The preceding `calloc` guarantees zero for empty cells and pays the cost of touching a dense 64 MiB result because the following convolution is dense anyway.
+## Generic convolution: choose ownership before intrinsics
 
-## Generic convolution: keep partial outputs in L1
+The generic fallback owns one output channel and processes a bounded row tile while iterating input channels and nine taps. Partial outputs remain close to L1 and are written once per completed reduction. This loop order may reload inputs across output channels, but it avoids repeatedly spilling a full output plane and needs no lock or reduction buffer.
 
-The fallback `conv3_relu` parallelizes over output channels. Within one output channel it processes eight output rows at a time:
+The fallback is deliberately retained. It is the portability path, the odd-shape path, and a differential reference for every wider kernel.
 
-```text
-8 rows × 256 columns × 4 B = 8 KiB
-```
+## Stride one: eight outputs share one AVX2 load
 
-At the widest post-stride layer, that partial output tile fits in L1 while the code loops over all input channels and nine kernel taps. The innermost `ox` traversal is contiguous for stride one and marked `omp simd`. Weights for one `(oc, ic)` pair are nine floats; input rows stream through cache lines.
+`conv3s1_relu8` handles output-channel multiples of eight. The hot loop loads eight adjacent FP32 input positions once, broadcasts eight scalar weights, and updates eight independent `__m256` accumulators with FMA. One input cache line therefore feeds 64 output values before eviction.
 
-This loop order makes a deliberate trade: it reloads input data for different output channels, but avoids writing and rereading a full output plane for every input channel. Each OpenMP worker owns its output plane, so there is no reduction or lock.
+Interior pixels use a padding-free vector loop. Boundary columns use a scalar path, making branch cost proportional to the perimeter rather than the image area. Work is collapsed over `(eight-channel block,row)`, which preserves parallelism when a layer has only 64 output channels.
 
-## Specialized stride-one kernel: four channels per input vector
+`PP_CPU_OC4=1` restores the four-output implementation for same-binary A/B. On the controlled 16-thread run, eight-channel stride-one processing improved total latency by about 5.8% relative to that fallback while producing byte-identical full output for the tested graph.
 
-When AVX2 is available and output channels are divisible by four, `conv3s1_relu4` changes the reuse unit. One unaligned `__m256` loads eight adjacent input pixels. Four broadcast weights update four independent vector accumulators using FMA.
+## Stride two: share the gather too
 
-For the same input vector, the scalar conceptual path would load it once per output channel. Grouping four channels amortizes that load and keeps 32 output results in registers (`4 × 8`). ReLU becomes four vector max operations at the end of the reduction.
+Adjacent outputs read input x positions two floats apart, so a contiguous load cannot represent the logical vector. `conv3s2_relu8` uses an AVX2 gather for `[0,2,4,…,14]` and shares that gather across eight output channels.
 
-Interior x positions use this vector path. Boundary pixels use a scalar branch, which removes padding checks from the hot vector loop. The boundary cost is proportional to the perimeter, not the image area.
+Gather remains more expensive than a unit-stride load; widening does not erase the physical layout. It does amortize address generation and input traffic. `PP_CPU_S2OC4=1` restores the narrower stride-two path. Same-binary measurements improved total latency by about 3.0% and backbone time by about 5.1%, with byte-identical graph output.
 
-## Stride two: gather is the honest cost
+## Final heads: reduce once, write once
 
-Adjacent outputs consume input x positions separated by two. `conv3s2_relu4` therefore uses `_mm256_i32gather_ps` with indices `[0,2,4,…,14]`. Gather is less friendly than a contiguous load: it asks hardware to collect values from multiple positions and may consume more load-port resources. It is still useful because four output channels share the gathered vector.
+The old plain-output convolution accumulated one kernel tap at a time into memory. Final branches have only 2–12 output channels, so parallelizing only by channel left most workers idle and repeatedly loaded/stored the same output.
 
-This is a good example of a shape-specific limit. Stride-one convolution can use full cache-line locality; stride-two convolution cannot pretend its logical neighbors are physically contiguous.
+The direct plain kernels collapse `(channel_group,row)`, accumulate all input channels and taps in registers, add bias once, and write once. Specialized groups cover one, two, four, or eight output channels. The widest valid group is selected by divisibility; `PP_CPU_PLAIN_ACCUM` and `PP_CPU_PLAIN_OC{1,2,4}` expose every fallback.
 
-## Deblocks and heads
+The optimized path changes floating-point association but not the graph contract. Compared with the old accumulation path, raw maximum delta was `1.526e-5`; the PyTorch checkpoint oracle remains allclose with sub-`1e-3` maximum error. Head time fell from roughly 143 ms to about 123 ms in the controlled A/B sequence.
 
-The stage-0 deblock is a non-overlapping 2×2 stride-two convolution. The other deblocks are transposed convolutions whose stride equals kernel size, so output tiles do not overlap. That property removes atomic accumulation and lets each output channel own a plane.
+## Operator fixtures make widening safe
 
-The shared feature is `64 × 128 × 128`. Every one of 36 branch-middle convolutions reads it, then an output convolution produces a small branch-specific channel count. This repeated 3×3 work explains why heads account for roughly 188–192 ms of the CPU run despite their compact final output.
+[`tests/test_cpu_conv.c`](../tests/test_cpu_conv.c) uses a deterministic scalar oracle for:
+
+- small padding edges;
+- odd widths and heights;
+- stride one and stride two;
+- ReLU and plain output;
+- representative 64-channel shapes.
+
+The largest observed fixture error is `5.96e-7`. These fixtures test indexing and boundary ownership independently of the full model and are run by both `make test` and `make portable-test`.
+
+## GGML is a two-shape accelerator, not a model format requirement
+
+`make ggml` builds official ggml `v0.16.0` at a pinned commit. [`src/infer_ggml.c`](../src/infer_ggml.c) creates two thread-local, fixed-shape graphs for:
+
+- `64→128`, input `256×256`, stride 2;
+- `128→256`, input `128×128`, stride 2.
+
+Input, OIHW weight, and output tensors point directly at existing runtime buffers. The graph has no allocator-owned tensor data, and one bounded thread-local work buffer is shared between shapes. Bias and ReLU remain in the C runtime. `PP_GGML_DISABLE=1` restores native convolution.
+
+Representative per-shape probes explain the selective dispatch:
+
+| Shape | Result |
+|---|---|
+| `64→64 @ 512²/s2` | native wins |
+| `64→64 @ 256²/s1` | native wins |
+| `64→128 @ 256²/s2` | GGML wins |
+| `128→256 @ 128²/s2` | GGML wins |
+| `384→64 @ 128²/s1` | native wins |
+
+At 16 threads the hybrid reduces total median from 468.816 to 458.973 ms (`-2.10%`) and increases capacity from 129.92 to 147.92 MiB. At the tuned 32-worker setting, native is 410.406 ms and GGML is 415.312 ms. Thread topology changes the library crossover, so explicit reports are safer than an opaque heuristic.
+
+GGUF was not added as a second container. The existing `.ppw` already supplies aligned, CRC-checked, mmap-accessible, offline-folded FP32 tensors for a frozen CNN. GGUF would be useful for a broader metadata/interchange contract, but the file extension alone cannot improve a convolution kernel.
+
+## Why quantization was not promoted
+
+Fake PTQ screens covered per-output INT8 weights and quantized activations. Weight-only INT8 produced about `0.314` mean raw error and a maximum near `78.6`; activation-plus-weight schemes were similarly outside the oracle tolerance. Without calibration, quantization-aware training, and task evaluation, replacing FP32 would exchange a proven graph for an unbounded accuracy change.
+
+The repository therefore keeps FP32 as the CPU correctness contract. A future low-bit path must first pass saved per-operator fixtures, then the raw graph oracle, then decoded and task-accuracy gates.
 
 ## Measured stage split
 
-Reference fixture, 16 threads, four warm runs:
+Twenty-run reports on the same fixture:
 
-| Stage | Typical warm latency |
-|---|---:|
-| PFN | 2.1–2.5 ms |
-| Backbone + deblocks | 392–404 ms |
-| Shared convolution + heads | 187–192 ms |
-| Total warm mean | 591.99 ms |
+| Path | PFN | Scatter | Backbone | Heads | Total |
+|---|---:|---:|---:|---:|---:|
+| native, 16 threads | 2.046 | 2.828 | 338.347 | 123.793 | 468.816 ms |
+| GGML hybrid, 16 threads | 2.019 | 2.842 | 330.170 | 122.747 | 458.973 ms |
+| native, tuned 32 workers | 2.205 | 2.781 | 281.895 | 123.430 | 410.406 ms |
 
-At 133.57 GFLOP, the effective graph rate is about 226 GFLOP/s. The number is useful for comparing this exact graph, but it does not imply every CPU instruction is an FMA; gathers, address arithmetic, ReLU, allocation, and cache misses are included in latency.
+The graph performs a source-derived 133.57 GFLOP. Dividing by total latency is useful only as a whole-graph comparison: allocation, gathers, index arithmetic, ReLU, cache misses, and scheduling remain inside the denominator.
 
-The CPU profile boundary closes `backbone_ms` before concat/shared; the CUDA event boundary closes it after shared. Compare total latency directly, but account for this boundary difference before comparing backend stage labels.
+The CPU profile closes `backbone_ms` before the shared convolution; CUDA closes it after shared. Compare backend totals directly, but do not compare stage labels without accounting for that boundary.
 
-## Portability
+## Portability and controls
 
-`make portable-test` rebuilds with `OMP=0`. Unknown pragmas are suppressed, the scalar/vector code remains valid, and CUDA stays optional. `-march=native` enables AVX2/FMA on the measured machine; a distributable binary should choose a lower baseline or add runtime dispatch.
+`make portable-test` rebuilds with `OMP=0`. `-march=native` enables AVX2/FMA on the reference host; a distributable binary should lower the ISA baseline or add runtime dispatch.
+
+| Switch | Restored behavior |
+|---|---|
+| `PP_CPU_OC4=1` | four-output stride-one ReLU kernel |
+| `PP_CPU_S2OC4=1` | four-output stride-two gather kernel |
+| `PP_CPU_PLAIN_ACCUM=1` | memory-accumulating plain convolution |
+| `PP_CPU_PLAIN_OC4=1` | cap direct plain groups at four outputs |
+| `PP_CPU_PLAIN_OC2=1` | cap at two outputs |
+| `PP_CPU_PLAIN_OC1=1` | cap at one output |
+| `PP_GGML_DISABLE=1` | native convolution in the GGML binary |
 
 ## What to remember
 
-- SIMD comes after loop order: first choose a working set and ownership model that caches can support.
-- Grouping output channels is a data-reuse optimization, not merely "using AVX2."
-- Static output-channel ownership avoids synchronization and false sharing, but load balance depends on channel counts and uniform spatial work.
+- Lifetimes and output ownership determine whether SIMD has useful data reuse.
+- Widening a kernel must preserve enough parallel tasks for the actual channel counts.
+- Library selection is an operator-and-topology decision, not a repository-wide ideology.
+- Quantization needs an accuracy workflow; a compact representation is not evidence of a faster or valid graph.
 
 ## What remains
 
-The CPU workspace is allocated per inference call. Persistent arenas could reduce allocation/page costs in batch use. More aggressive channel blocking or packed weights might improve L2 reuse, but any change should be measured separately for stride-one, stride-two, deblock, shared, and tiny output-head shapes.
+The CPU activation arena is allocated per inference call. Persistent batch arenas, runtime ISA dispatch, and calibrated low-bit kernels remain measurable extensions. Any new packed layout must beat the 410.406 ms 32-worker native result, not merely the 16-thread convenience baseline.

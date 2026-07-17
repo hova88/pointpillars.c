@@ -1,6 +1,6 @@
 # pointpillars.c — nuScenes MultiHead
 
-A specialized, dependency-free C runtime for the native OpenPCDet nuScenes PointPillars MultiHead checkpoint. It includes optimized AVX2/FMA CPU kernels, custom CUDA FP32 and Tensor Core paths, official nuScenes evaluation, and a live ANSI/Braille point-cloud TUI.
+A specialized C11 runtime for the native OpenPCDet nuScenes PointPillars MultiHead checkpoint. The base CPU and custom CUDA builds remain dependency-light; optional pinned GGML and cuDNN targets add shape-selected CPU kernels and a strict FP32/FMA GPU path. The repository also includes official nuScenes evaluation and a live ANSI/Braille point-cloud TUI.
 
 ![cover](./docs/cover.png)
 
@@ -30,7 +30,10 @@ Python and PyTorch are used only by the offline checkpoint converter. Inference 
 ```sh
 make model                 # native checkpoint -> 190-tensor, 23.19 MiB container
 make                       # CPU runtime
-make cuda                  # custom CUDA runtime
+make ggml                 # pinned ggml v0.16.0 CPU hybrid
+make cuda                  # custom CUDA/WMMA runtime
+make cudnn                 # fastest strict-FP32 CUDA runtime
+make cudnn-test            # scalar convolution/deconvolution fixtures
 make test
 make portable-test         # clean OMP=0 build and tests
 ```
@@ -52,7 +55,7 @@ The converter performs sweep-local ego filtering, sensor/ego/global transforms, 
 ## Inference and benchmarks
 
 ```sh
-frame=$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | head -1)
+frame=$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | sort | head -1)
 
 OMP_NUM_THREADS=16 ./build/pointpillars infer \
   nuscenes_multihead.ppw "$frame" result.ppout 5 boxes.json
@@ -65,6 +68,14 @@ PP_CUDA_PRECISE=1 ./build/pointpillars_cuda infer-cuda \
   nuscenes_multihead.ppw "$frame" precise.ppout 5
 
 ./build/pointpillars_cuda bench-cuda nuscenes_multihead.ppw "$frame" 10
+
+# Strict FP32 cuDNN is the fastest measured backend:
+./build/pointpillars_cudnn bench-cuda \
+  nuscenes_multihead.ppw "$frame" 10
+
+# Real batch/TUI output boundary: compact D2H plus decode/NMS.
+./build/pointpillars_cudnn bench-detect-cuda \
+  nuscenes_multihead.ppw "$frame" 10
 ```
 
 Directory batch inference overlaps loading and voxelization of the next frame
@@ -80,22 +91,30 @@ output across 81 checked frames. `PP_CUDA_RAW_DECODE=1` restores full tensor
 transfer for differential testing. The bounded compact buffer adds 32.5 MiB of
 device capacity only when this path is used.
 
-Measured on the current i5-14600KF / RTX 4060 Ti system with a 328k-point ten-sweep frame:
+Measured by the JSON perf protocol on the current i5-14600KF / RTX 4060 Ti system:
 
-| backend | warm network latency |
+| backend | warm end-to-end latency |
 |---|---:|
-| CPU AVX2/FMA, 16 threads | ~603 ms |
-| CUDA precise FP32 | ~604 ms |
-| CUDA hybrid implicit/explicit WMMA fast path | ~55 ms |
+| CPU AVX2/FMA, 16 threads | 468.816 ms raw |
+| CPU AVX2/FMA, host-tuned 32 workers | 410.406 ms raw |
+| pinned GGML hybrid, 16 threads | 458.973 ms raw |
+| custom CUDA WMMA | 44.397 ms raw / 44.104 ms compact |
+| cuDNN FP32/FMA | 12.993 ms raw / 12.160 ms compact |
 
-The precise CUDA and CPU outputs match the direct PyTorch checkpoint oracle. The
-fast path is explicitly approximate; the current reference-frame oracle reports
-maximum absolute error `8.66e-4` and `allclose=True`.
+CPU, GGML hybrid, custom precise CUDA, and cuDNN FMA match the direct PyTorch
+checkpoint oracle; cuDNN has maximum absolute error `4.997e-4` on the perf
+fixture. The custom FP16-WMMA path is explicitly approximate: the same fixture
+reports maximum raw error around `0.786`, mean error around `0.006`, and one
+score-threshold-edge decoded-box difference. Its checked-in claim is task
+evaluation, not strict graph equivalence.
 
-The default CUDA path uses implicit WMMA for the backbone and a reused explicit
-im2col for the multi-head branches. Set `PP_CUDA_EXPLICIT=1` for the older fully
-explicit path. The hybrid path uses about 270.5 MiB of persistent device memory,
-down from roughly 414.5 MiB for the explicit workspace.
+The custom CUDA path uses implicit WMMA for backbone/shared layers, one reused
+explicit im2col for the 36 middle heads, and one-warp implicit final outputs.
+Set `PP_CUDA_EXPLICIT=1` for the older explicit path. Raw custom capacity is
+228.46 MiB. The cuDNN build consumes existing FP32 NCHW/OIHW buffers, caches
+deterministic shape plans, maps transposed convolution to backward-data, and
+uses 206.97 MiB raw capacity. `PP_CUDNN_DISABLE=1` restores custom CUDA in the
+same binary; `PP_CUDNN_TF32=1` is an opt-in approximate mode, not the default.
 Stage profiling uses CUDA events so PFN, backbone, and heads remain on one
 continuous stream without host-side device barriers. Set
 `PP_CUDA_SYNC_STAGES=1` to restore the older synchronization points for A/B or
@@ -141,13 +160,17 @@ python3 tools/evaluate_nuscenes.py \
 
 On the local 81-frame official `mini_val` split, the current fast path measures mAP `0.2056` and NDS `0.3280`. This must not be compared directly with the checkpoint filename's 58.23 NDS, which refers to a different/full evaluation split.
 
+The final cuDNN FMA run measures mAP `0.205512` and NDS `0.327992` on the same split, effectively matching the custom FP16-WMMA result while also passing the strict raw checkpoint oracle.
+
 ## Architecture and optimization
 
 - Versioned, aligned, bounds-checked, per-tensor CRC32 model container.
 - Offline BatchNorm folding with the correct `1e-3` backbone/PFN epsilon and `1e-5` SingleHead epsilon.
-- AVX2/FMA four-output-channel CPU microkernels and stride-2 gathers.
+- AVX2/FMA eight-output-channel CPU microkernels, stride-2 gathers, and direct tiny heads.
+- Shape-selected zero-copy GGML F32 convolution with a native fallback.
 - Persistent CUDA weights/workspaces and device-resident intermediates.
 - FP16 implicit-im2col plus WMMA with FP32 accumulation; explicit precise fallback.
+- Optional cached cuDNN FP32/FMA forward and backward-data convolution.
 - MultiHead channel and anchor ordering reproduced from upstream OpenPCDet.
 - Sine/cosine ResidualCoder, velocity decode and per-class rotated NMS.
 - One canonical detection representation shared by JSON, official evaluation and TUI.
@@ -162,3 +185,10 @@ CUDA tensor-core tiling, bounded pipeline residency, compact decode, validation,
 and the interactive terminal renderer. The repository also ships the reusable
 [`siboehm-blog`](skills/siboehm-blog/SKILL.md) skill used to produce and extend
 that publication-ready documentation.
+
+Reproducible raw and real-output reports are generated with `make perf-cpu`,
+`make perf-ggml`, `make perf-cuda[-compact]`, and
+`make perf-cudnn[-compact]`. See the step-by-step
+[performance workflow](wiki/11-performance-workflow.md) for build identity,
+thread sweeps, cold/warm statistics, accuracy gates, memory/transfer regression
+limits, and the complete optimization/negative-result record.

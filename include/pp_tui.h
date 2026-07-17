@@ -14,32 +14,19 @@ typedef struct {
     float center_x, center_y, zoom, yaw;
     float score_threshold;
     unsigned class_mask;
-    int paused, show_points, show_boxes, show_velocity, show_grid, show_tracks;
-    int show_help, selected;
+    int paused, show_boxes, show_velocity, show_grid, show_tracks, selected;
     pp_tui_track tracks[PP_TUI_MAX_TRACKS];
     size_t track_count, last_frame;
     int next_track_id, have_last_frame;
 } pp_tui_state;
 
-typedef struct {
-    char *data;
-    size_t length;
-} pp_tui_frame;
-
 enum { PP_TUI_NONE, PP_TUI_REDRAW, PP_TUI_NEXT, PP_TUI_PREV, PP_TUI_QUIT };
 
-void pp_tui_state_init(pp_tui_state *state);
 int pp_tui_begin(pp_tui_state *state);
 void pp_tui_end(void);
 int pp_tui_poll(pp_tui_state *state, int timeout_ms);
 void pp_tui_update_tracks(pp_tui_state *state,
                           const pp_detections *detections, size_t frame);
-int pp_tui_compose(const float *points, size_t count, size_t stride,
-                   const pp_detections *detections, size_t frame,
-                   size_t frame_count, double inference_ms,
-                   const char *backend, const pp_tui_state *state,
-                   int columns, int rows, pp_tui_frame *output);
-void pp_tui_frame_free(pp_tui_frame *frame);
 void pp_tui_render(const float *points, size_t count, size_t stride,
                    const pp_detections *detections, size_t frame,
                    size_t frame_count, double inference_ms,

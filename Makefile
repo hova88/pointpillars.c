@@ -24,7 +24,6 @@ GGML_INSTALL ?= build/ggml-install
 PERF_FRAME ?= $(shell find /data/nuscenes/pointpillars_10sweep -name '*.bin' -type f 2>/dev/null | sort | head -1)
 PERF_REPS ?= 10
 PERF_THREADS ?= 16
-TUI_DATA ?= /data/nuscenes/pointpillars_10sweep
 CPU_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)' | sha256sum | cut -c1-12)
 CUDA_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)' | sha256sum | cut -c1-12)
 CUDNN_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)|cuDNN' | sha256sum | cut -c1-12)
@@ -37,7 +36,7 @@ CUDNN_OBJDIR := build/cudnn/$(CUDNN_CONFIG_ID)
 GGML_BINARY := build/pointpillars_ggml.$(GGML_CONFIG_ID)
 GGML_STAMP := $(GGML_INSTALL)/.pointpillars-$(GGML_COMMIT)
 
-.PHONY: all model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml tui-video prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate clean FORCE
+.PHONY: all model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate clean FORCE
 all: build/pointpillars
 cuda: build/pointpillars_cuda
 cudnn: build/pointpillars_cudnn
@@ -74,7 +73,7 @@ build/pointpillars_cuda: $(CUDA_BINARY) FORCE
 
 $(CUDNN_BINARY): src/main.c src/model.c src/voxel.c src/infer_cpu.c src/decode.c src/tui.c src/infer_cuda.cu src/infer_cudnn.cu include/pp_cuda.h include/pp_cudnn.h
 	mkdir -p $(CUDNN_OBJDIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DPP_WITH_CUDA -DPP_WITH_CUDNN -c src/main.c -o $(CUDNN_OBJDIR)/main.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DPP_WITH_CUDA -c src/main.c -o $(CUDNN_OBJDIR)/main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/model.c -o $(CUDNN_OBJDIR)/model.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/voxel.c -o $(CUDNN_OBJDIR)/voxel.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/infer_cpu.c -o $(CUDNN_OBJDIR)/infer_cpu.o
@@ -130,7 +129,7 @@ build/test_cpu_conv: src/infer_cpu.c src/model.c tests/test_cpu_conv.c include/p
 
 build/test_tui: src/tui.c tests/test_tui.c include/pp_tui.h FORCE
 	mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) src/tui.c tests/test_tui.c -lm -lutil $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/tui.c tests/test_tui.c -lm $(LDLIBS) -o $@
 
 test: model build/pointpillars build/test_model build/test_voxel build/test_decode build/test_cpu_conv build/test_tui
 	./build/test_model $(MODEL)
@@ -174,9 +173,6 @@ perf-ggml: build/pointpillars_ggml
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
 	python3 tools/perf.py run --backend cpu --binary ./build/pointpillars_ggml --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --threads $(PERF_THREADS) --output build/perf/ggml.json
-
-tui-video: build/pointpillars_cudnn
-	python3 tools/record_tui.py ./build/pointpillars_cudnn $(MODEL) $(TUI_DATA) docs/pointpillars-tui.mp4 --poster docs/pointpillars-tui.png
 
 prepare-data:
 	python3 tools/prepare_nuscenes.py --root /data/nuscenes --output /data/nuscenes/pointpillars_10sweep

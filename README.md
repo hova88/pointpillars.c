@@ -1,5 +1,10 @@
 # pointpillars.c
 
+[![Watch the live PointPillars terminal UI](docs/pointpillars-tui.png)](docs/pointpillars-tui.mp4)
+
+*The real ANSI/Braille viewer running inference and live interaction. Click the
+preview to play the 8-second H.264 demo.*
+
 **A native C11 inference runtime for the OpenPCDet nuScenes PointPillars MultiHead checkpoint.**
 
 `pointpillars.c` runs the frozen 190-tensor model on Linux, WSL, and macOS. It
@@ -132,6 +137,22 @@ terminal restoration. Use `Space`, arrows or `p`/`n`, `WASD`, `z`/`e`,
 `+`/`-`, `0`–`9`, `,`/`.`, `[`/`]`, `b`/`v`, `g`/`t`, `r`, and `q` to
 control the view.
 
+The demo is reproducible from the same executable and prepared frames. The
+recorder opens a fixed-size PTY, drives actual keyboard interactions, parses
+the emitted ANSI screen, and encodes it with Pillow and `ffmpeg`:
+
+```sh
+# macOS: records the native Accelerate/BNNS `tui` path.
+# Linux/WSL: records the cuDNN `tui-cuda` path by default.
+.venv/bin/python -m pip install Pillow
+make tui-video PYTHON=.venv/bin/python \
+  TUI_DATA=/data/nuscenes/pointpillars_10sweep
+```
+
+Override `TUI_BINARY`, `TUI_MODE`, or the recorder arguments when capturing a
+different backend. The checked artifact is 1200×720, 12 FPS, 8 seconds, and
+uses browser-compatible H.264/YUV420P with fast-start metadata.
+
 ## Reproducible benchmarks
 
 ```sh
@@ -233,6 +254,7 @@ comes from a different/full evaluation context.
 | `src/decode.c` | branch decode, residual geometry, and rotated NMS |
 | `tools/perf.py` | identified benchmark capture and regression comparison |
 | `tools/oracle_checkpoint.py` | independent PyTorch raw-graph oracle |
+| `tools/record_tui.py` | cross-platform PTY-to-H.264 TUI recorder |
 | `wiki/` | illustrated architecture and performance documentation |
 
 Start with the [systems performance wiki](wiki/Home.md), then use the

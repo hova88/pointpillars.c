@@ -2,6 +2,11 @@
 
 > **Outcome.** The base repository executes a native OpenPCDet nuScenes PointPillars MultiHead checkpoint in dependency-free C11, with optional pinned GGML, custom CUDA, and strict-FP32 cuDNN builds. The central story is how a frozen graph moves sparse points into a 64 MiB BEV canvas, 133.57 GFLOP of dense convolution, 36 prediction branches, a bounded output transfer, rotated NMS, and an interactive terminal renderer.
 
+[![Watch the live PointPillars terminal UI](../docs/pointpillars-tui.png)](../docs/pointpillars-tui.mp4)
+
+*Click the preview to play the real terminal session: responsive metric BEV,
+selection, filters, trails, camera controls, and live backend timing.*
+
 The same runtime now builds natively on macOS. Apple Silicon dispatches
 oracle-safe convolution shapes to Accelerate/BNNS, keeps the rejected 2×2/s2
 shape on canonical C, and requires no third-party OpenMP runtime.
@@ -63,6 +68,7 @@ checkpoint oracle at `6.51e-5` maximum absolute error. See the dedicated
 | [`src/decode.c`](../src/decode.c) | score filtering, residual decode, rotated NMS |
 | [`src/main.c`](../src/main.c) | CLI, perf modes, bounded preprocessing pipeline |
 | [`tools/perf.py`](../tools/perf.py) | identified cold/warm reports and regression gates |
+| [`tools/record_tui.py`](../tools/record_tui.py) | portable PTY capture and H.264 demo generation |
 | [`tools/`](../tools) | export, checkpoint oracle, data preparation, evaluation |
 | [`tests/`](../tests) | scalar/operator and runtime-contract fixtures |
 

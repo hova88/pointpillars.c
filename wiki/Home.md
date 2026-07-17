@@ -2,6 +2,10 @@
 
 > **Outcome.** The base repository executes a native OpenPCDet nuScenes PointPillars MultiHead checkpoint in dependency-free C11, with optional pinned GGML, custom CUDA, and strict-FP32 cuDNN builds. The central story is how a frozen graph moves sparse points into a 64 MiB BEV canvas, 133.57 GFLOP of dense convolution, 36 prediction branches, a bounded output transfer, rotated NMS, and an interactive terminal renderer.
 
+The same runtime now builds natively on macOS. Apple Silicon dispatches
+oracle-safe convolution shapes to Accelerate/BNNS, keeps the rejected 2×2/s2
+shape on canonical C, and requires no third-party OpenMP runtime.
+
 ![End-to-end PointPillars execution pipeline](assets/pipeline.svg)
 
 *Each speedup changes residency, representation, reuse, or the host/device boundary; no backend is allowed to change the model contract silently.*
@@ -24,6 +28,12 @@ Effective rate divides a source-derived 133.57 GFLOP by end-to-end latency. It i
 
 The custom FP16-WMMA path is not graph-equivalent: on the perf frame it has about `0.786` maximum raw error and changes one threshold-edge box. CPU, custom precise CUDA, and cuDNN FMA are the strict graph-equivalence routes. Approximate CUDA retains the checked-in task-evaluation claim instead of borrowing the precise backend's oracle result.
 
+The Apple M2 report uses a separate deterministic 24,000-point / 7,881-pillar
+fixture, so it is not mixed into the WSL table. The strict Accelerate hybrid
+reduced warm median from `7017.255 ms` to `249.490 ms` (`28.1×`) and passed the
+checkpoint oracle at `6.51e-5` maximum absolute error. See the dedicated
+[macOS and Apple Silicon chapter](12-macos-apple-silicon.md).
+
 ## Read this like a worklog
 
 1. [The frozen model contract](01-model-contract.md) — shapes, layouts, classes, and why specialization is legitimate.
@@ -37,6 +47,7 @@ The custom FP16-WMMA path is not graph-equivalent: on the perf frame it has abou
 9. [The correctness funnel](09-validation.md) — scalar fixtures, graph oracles, decoded identity, and official nuScenes evaluation.
 10. [Extension map](10-extension-guide.md) — where to add a backend, operator, output format, or visualization without breaking the contract.
 11. [Performance workflow](11-performance-workflow.md) — the complete measure/change/prove sequence, results, and negative experiments.
+12. [macOS and Apple Silicon](12-macos-apple-silicon.md) — native build, BNNS plan caching, the strict shape gate, and M2 evidence.
 
 ## Repository map
 
@@ -44,7 +55,8 @@ The custom FP16-WMMA path is not graph-equivalent: on the perf frame it has abou
 |---|---|
 | [`src/voxel.c`](../src/voxel.c) | deterministic file loading and pillar features |
 | [`src/model.c`](../src/model.c) | mapped, bounds-checked FP32 model container |
-| [`src/infer_cpu.c`](../src/infer_cpu.c) | complete C11/OpenMP/AVX2 backend |
+| [`src/infer_cpu.c`](../src/infer_cpu.c) | complete C11/OpenMP/AVX2 and portable fallback backend |
+| [`src/infer_apple.c`](../src/infer_apple.c) | cached Accelerate/BNNS convolution adapter |
 | [`src/infer_ggml.c`](../src/infer_ggml.c) | optional two-shape zero-copy GGML accelerator |
 | [`src/infer_cuda.cu`](../src/infer_cuda.cu) | persistent CUDA graph and custom kernels |
 | [`src/infer_cudnn.cu`](../src/infer_cudnn.cu) | optional cached FP32 cuDNN convolution plans |

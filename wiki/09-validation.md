@@ -15,10 +15,16 @@
 | [`test_model.c`](../tests/test_model.c) | 190 records, representative tensor shapes, mapped container |
 | [`test_voxel.c`](../tests/test_voxel.c) | clipping, features, coordinates, zero padding across reuse |
 | [`test_decode.c`](../tests/test_decode.c) | empty output, one candidate, compact/full decode equality |
-| [`test_cpu_conv.c`](../tests/test_cpu_conv.c) | scalar-vs-AVX2 padding, stride-1/2, ReLU, and plain heads |
+| [`test_cpu_conv.c`](../tests/test_cpu_conv.c) | scalar-vs-AVX2/BNNS padding, stride-1/2, ReLU, plain heads, and Apple transposed convolution |
 | [`test_tui.c`](../tests/test_tui.c) | track growth, jump reset, missed-frame expiry |
 
 The CPU convolution fixture includes representative 64-channel shapes and observes at most `5.96e-7` error. Distinct nonzero exit codes localize failures without a test-framework dependency.
+
+On Apple M2, BNNS 3×3 fixtures observe at most `3.58e-7`; the transposed
+convolution fixture is exact. The full promoted Apple graph reports `6.51e-5`
+maximum and `9.78e-7` mean absolute error against PyTorch. The faster all-BNNS
+experiment fails at `2.12` maximum because of the 2×2/s2 shape and is therefore
+opt-in rather than default.
 
 `make portable-test` cleans and rebuilds the suite with `OMP=0`. Test binaries are rebuilt with the active flags, so an earlier non-OpenMP executable cannot be silently reused by a later OpenMP test.
 
@@ -98,6 +104,8 @@ PP_CPU_OC4=1                 # narrower stride-one CPU kernel
 PP_CPU_S2OC4=1               # narrower stride-two CPU kernel
 PP_CPU_PLAIN_ACCUM=1         # old final-head accumulation
 PP_GGML_DISABLE=1            # native CPU inside GGML binary
+PP_APPLE_DISABLE=1           # portable C inside the macOS binary
+PP_APPLE_CONV2=1             # reproduce rejected approximate BNNS 2x2/s2
 PP_CUDA_EXPLICIT=1           # custom explicit im2col
 PP_CUDA_EXPLICIT_OUTPUTS=1   # explicit final-head transforms
 PP_CUDA_PRECISE=1            # custom direct FP32 convolution

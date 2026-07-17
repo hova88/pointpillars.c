@@ -1,9 +1,23 @@
 CC ?= cc
+PYTHON ?= python3
 CFLAGS ?= -O3 -march=native -std=c11 -Wall -Wextra -Wpedantic
 CPPFLAGS += -Iinclude
 CFLAGS += -pthread
 LDLIBS += -pthread
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+OMP ?= 0
+CPPFLAGS += -DPP_WITH_ACCELERATE
+LDLIBS += -framework Accelerate
+CPU_EXTRA_SRC := src/infer_apple.c
+CXX_RUNTIME := -lc++
+GGML_RPATH := -Wl,-rpath,@loader_path/ggml-install/lib
+else
 OMP ?= 1
+CPU_EXTRA_SRC :=
+CXX_RUNTIME := -lstdc++
+GGML_RPATH := -Wl,-rpath,'$$ORIGIN/ggml-install/lib'
+endif
 ifeq ($(OMP),1)
 CFLAGS += -fopenmp
 LDLIBS += -fopenmp
@@ -18,16 +32,17 @@ CUDA_ARCH ?= sm_89
 GGML_VERSION ?= v0.16.0
 GGML_COMMIT ?= 524f974bb21a1013408f76d71c15732482c0c3fe
 GGML_SOURCE ?= build/ggml-src
-GGML_SOURCE_ID := $(shell printf '%s\n' '$(abspath $(GGML_SOURCE))' | sha256sum | cut -c1-12)
+HASH_CMD := $(if $(shell command -v sha256sum 2>/dev/null),sha256sum,shasum -a 256)
+GGML_SOURCE_ID := $(shell printf '%s\n' '$(abspath $(GGML_SOURCE))' | $(HASH_CMD) | cut -c1-12)
 GGML_BUILD_DIR ?= build/ggml-build/$(GGML_SOURCE_ID)
 GGML_INSTALL ?= build/ggml-install
 PERF_FRAME ?= $(shell find /data/nuscenes/pointpillars_10sweep -name '*.bin' -type f 2>/dev/null | sort | head -1)
 PERF_REPS ?= 10
 PERF_THREADS ?= 16
-CPU_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)' | sha256sum | cut -c1-12)
-CUDA_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)' | sha256sum | cut -c1-12)
-CUDNN_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)|cuDNN' | sha256sum | cut -c1-12)
-GGML_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)|$(GGML_COMMIT)' | sha256sum | cut -c1-12)
+CPU_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)' | $(HASH_CMD) | cut -c1-12)
+CUDA_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)' | $(HASH_CMD) | cut -c1-12)
+CUDNN_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)|cuDNN' | $(HASH_CMD) | cut -c1-12)
+GGML_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)|$(GGML_COMMIT)' | $(HASH_CMD) | cut -c1-12)
 CPU_BINARY := build/pointpillars.$(CPU_CONFIG_ID)
 CUDA_BINARY := build/pointpillars_cuda.$(CUDA_CONFIG_ID)
 CUDA_OBJDIR := build/cuda/$(CUDA_CONFIG_ID)
@@ -36,7 +51,7 @@ CUDNN_OBJDIR := build/cudnn/$(CUDNN_CONFIG_ID)
 GGML_BINARY := build/pointpillars_ggml.$(GGML_CONFIG_ID)
 GGML_STAMP := $(GGML_INSTALL)/.pointpillars-$(GGML_COMMIT)
 
-.PHONY: all model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate clean FORCE
+.PHONY: all model setup-model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate clean FORCE
 all: build/pointpillars
 cuda: build/pointpillars_cuda
 cudnn: build/pointpillars_cudnn
@@ -45,12 +60,15 @@ ggml: build/pointpillars_ggml
 FORCE:
 
 model: $(MODEL)
+setup-model:
+	$(PYTHON) -m venv .venv
+	.venv/bin/python -m pip install -r requirements-export.txt
 $(MODEL): tools/export_checkpoint.py $(CHECKPOINT) $(CONFIG)
-	python3 tools/export_checkpoint.py $(CHECKPOINT) $(CONFIG) $@
+	$(PYTHON) tools/export_checkpoint.py $(CHECKPOINT) $(CONFIG) $@
 
-$(CPU_BINARY): src/main.c src/model.c src/voxel.c src/infer_cpu.c src/decode.c src/tui.c include/pp_model.h include/pointpillars.h include/pp_infer.h include/pp_decode.h include/pp_tui.h
+$(CPU_BINARY): src/main.c src/model.c src/voxel.c src/infer_cpu.c $(CPU_EXTRA_SRC) src/decode.c src/tui.c include/pp_model.h include/pointpillars.h include/pp_infer.h include/pp_decode.h include/pp_tui.h
 	mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) src/main.c src/model.c src/voxel.c src/infer_cpu.c src/decode.c src/tui.c -lm $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/main.c src/model.c src/voxel.c src/infer_cpu.c $(CPU_EXTRA_SRC) src/decode.c src/tui.c -lm $(LDLIBS) -o $@
 
 # The public path is refreshed from the active configuration-specific binary.
 # This avoids relying on timestamp ordering when switching OMP or compiler flags.
@@ -106,7 +124,7 @@ $(GGML_STAMP): $(GGML_SOURCE)/.git
 
 $(GGML_BINARY): $(GGML_STAMP) src/main.c src/model.c src/voxel.c src/infer_cpu.c src/infer_ggml.c src/decode.c src/tui.c include/pp_ggml.h
 	mkdir -p build
-	$(CC) $(CPPFLAGS) -I$(GGML_INSTALL)/include $(CFLAGS) -DPP_WITH_GGML src/main.c src/model.c src/voxel.c src/infer_cpu.c src/infer_ggml.c src/decode.c src/tui.c -L$(GGML_INSTALL)/lib -Wl,-rpath,'$$ORIGIN/ggml-install/lib' -lggml -lggml-cpu -lggml-base -lstdc++ -lm $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -I$(GGML_INSTALL)/include $(CFLAGS) -DPP_WITH_GGML src/main.c src/model.c src/voxel.c src/infer_cpu.c $(CPU_EXTRA_SRC) src/infer_ggml.c src/decode.c src/tui.c -L$(GGML_INSTALL)/lib $(GGML_RPATH) -lggml -lggml-cpu -lggml-base $(CXX_RUNTIME) -lm $(LDLIBS) -o $@
 
 build/pointpillars_ggml: $(GGML_BINARY) FORCE
 	cp $(GGML_BINARY) $@
@@ -119,13 +137,13 @@ build/test_voxel: src/voxel.c tests/test_voxel.c include/pointpillars.h FORCE
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/voxel.c tests/test_voxel.c -lm -o $@
 
-build/test_decode: src/decode.c src/infer_cpu.c src/model.c tests/test_decode.c include/pp_decode.h FORCE
+build/test_decode: src/decode.c src/infer_cpu.c $(CPU_EXTRA_SRC) src/model.c tests/test_decode.c include/pp_decode.h FORCE
 	mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) src/decode.c src/infer_cpu.c src/model.c tests/test_decode.c -lm $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/decode.c src/infer_cpu.c $(CPU_EXTRA_SRC) src/model.c tests/test_decode.c -lm $(LDLIBS) -o $@
 
-build/test_cpu_conv: src/infer_cpu.c src/model.c tests/test_cpu_conv.c include/pp_kernels.h FORCE
+build/test_cpu_conv: src/infer_cpu.c $(CPU_EXTRA_SRC) src/model.c tests/test_cpu_conv.c include/pp_kernels.h FORCE
 	mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) src/infer_cpu.c src/model.c tests/test_cpu_conv.c -lm $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/infer_cpu.c $(CPU_EXTRA_SRC) src/model.c tests/test_cpu_conv.c -lm $(LDLIBS) -o $@
 
 build/test_tui: src/tui.c tests/test_tui.c include/pp_tui.h FORCE
 	mkdir -p build
@@ -147,62 +165,62 @@ perf: perf-cpu
 perf-cpu: build/pointpillars
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cpu --binary ./build/pointpillars --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --threads $(PERF_THREADS) --output build/perf/cpu.json
+	$(PYTHON) tools/perf.py run --backend cpu --binary ./build/pointpillars --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --threads $(PERF_THREADS) --output build/perf/cpu.json
 
 perf-cuda: build/pointpillars_cuda
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cuda --binary ./build/pointpillars_cuda --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cuda.json
+	$(PYTHON) tools/perf.py run --backend cuda --binary ./build/pointpillars_cuda --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cuda.json
 
 perf-cuda-compact: build/pointpillars_cuda
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cuda --output-mode compact --binary ./build/pointpillars_cuda --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cuda-compact.json
+	$(PYTHON) tools/perf.py run --backend cuda --output-mode compact --binary ./build/pointpillars_cuda --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cuda-compact.json
 
 perf-cudnn: build/pointpillars_cudnn
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cuda --binary ./build/pointpillars_cudnn --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cudnn.json
+	$(PYTHON) tools/perf.py run --backend cuda --binary ./build/pointpillars_cudnn --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cudnn.json
 
 perf-cudnn-compact: build/pointpillars_cudnn
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cuda --output-mode compact --binary ./build/pointpillars_cudnn --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cudnn-compact.json
+	$(PYTHON) tools/perf.py run --backend cuda --output-mode compact --binary ./build/pointpillars_cudnn --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --output build/perf/cudnn-compact.json
 
 perf-ggml: build/pointpillars_ggml
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	mkdir -p build/perf
-	python3 tools/perf.py run --backend cpu --binary ./build/pointpillars_ggml --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --threads $(PERF_THREADS) --output build/perf/ggml.json
+	$(PYTHON) tools/perf.py run --backend cpu --binary ./build/pointpillars_ggml --model $(MODEL) --points "$(PERF_FRAME)" --reps $(PERF_REPS) --threads $(PERF_THREADS) --output build/perf/ggml.json
 
 prepare-data:
-	python3 tools/prepare_nuscenes.py --root /data/nuscenes --output /data/nuscenes/pointpillars_10sweep
+	$(PYTHON) tools/prepare_nuscenes.py --root /data/nuscenes --output /data/nuscenes/pointpillars_10sweep
 
 checkpoint-oracle: test
-	@f=$$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | sort | head -1); \
-	OMP_NUM_THREADS=16 ./build/pointpillars infer $(MODEL) "$$f" /tmp/nuscenes_cpu.ppout 5; \
-	python3 tools/oracle_checkpoint.py $(CHECKPOINT) "$$f" /tmp/nuscenes_cpu.ppout
+	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
+	OMP_NUM_THREADS=16 ./build/pointpillars infer $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_cpu.ppout 5
+	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_cpu.ppout
 
 checkpoint-oracle-cuda: test build/pointpillars_cuda
-	@f=$$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | sort | head -1); \
-	PP_CUDA_PRECISE=1 ./build/pointpillars_cuda infer-cuda $(MODEL) "$$f" /tmp/nuscenes_cuda.ppout 5; \
-	python3 tools/oracle_checkpoint.py $(CHECKPOINT) "$$f" /tmp/nuscenes_cuda.ppout
+	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
+	PP_CUDA_PRECISE=1 ./build/pointpillars_cuda infer-cuda $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_cuda.ppout 5
+	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_cuda.ppout
 
 checkpoint-oracle-cudnn: test build/pointpillars_cudnn
-	@f=$$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | sort | head -1); \
-	PP_CUDA_PRECISE=1 ./build/pointpillars_cudnn infer-cuda $(MODEL) "$$f" /tmp/nuscenes_cudnn.ppout 5; \
-	python3 tools/oracle_checkpoint.py $(CHECKPOINT) "$$f" /tmp/nuscenes_cudnn.ppout
+	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
+	PP_CUDA_PRECISE=1 ./build/pointpillars_cudnn infer-cuda $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_cudnn.ppout 5
+	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_cudnn.ppout
 
 checkpoint-oracle-ggml: test build/pointpillars_ggml
-	@f=$$(find /data/nuscenes/pointpillars_10sweep -name '*.bin' | sort | head -1); \
-	OMP_NUM_THREADS=16 ./build/pointpillars_ggml infer $(MODEL) "$$f" /tmp/nuscenes_ggml.ppout 5; \
-	python3 tools/oracle_checkpoint.py $(CHECKPOINT) "$$f" /tmp/nuscenes_ggml.ppout
+	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
+	OMP_NUM_THREADS=16 ./build/pointpillars_ggml infer $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_ggml.ppout 5
+	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_ggml.ppout
 
 evaluate: cuda
 	rm -rf build/nuscenes-detections
 	./build/pointpillars_cuda batch-cuda $(MODEL) /data/nuscenes/pointpillars_10sweep build/nuscenes-detections
 	mkdir -p evaluation
-	python3 tools/make_submission.py build/nuscenes-detections /data/nuscenes/pointpillars_10sweep/manifest.json evaluation/nuscenes_submission.json
-	python3 tools/evaluate_nuscenes.py evaluation/nuscenes_submission.json --output evaluation/nuscenes-mini
+	$(PYTHON) tools/make_submission.py build/nuscenes-detections /data/nuscenes/pointpillars_10sweep/manifest.json evaluation/nuscenes_submission.json
+	$(PYTHON) tools/evaluate_nuscenes.py evaluation/nuscenes_submission.json --output evaluation/nuscenes-mini
 
 clean:
 	rm -rf build

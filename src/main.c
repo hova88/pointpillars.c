@@ -112,9 +112,10 @@ int main(int argc,char **argv){
         clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6;if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);
         if(!good){directory_ok=0;running=0;free(qp);break;}
         pp_tui_update_tracks(&ui,&dd,fi);
-        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,tui_backend_name(use_cuda),&ui);
+        const char *backend=tui_backend_name(use_cuda);
+        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,backend,&ui);
         int action;
-        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,tui_backend_name(use_cuda),&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
+        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,backend,&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
         free(qp);
         if(action==PP_TUI_QUIT)running=0;else if(action==PP_TUI_PREV)fi=fi?fi-1:nf-1;else fi=(fi+1)%nf;
        }

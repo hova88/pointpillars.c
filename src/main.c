@@ -38,6 +38,22 @@ static void usage(const char *p) {
 }
 static int compare_names(const void*a,const void*b){return strcmp(*(char*const*)a,*(char*const*)b);}
 static double monotonic_ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1e3+t.tv_nsec/1e6;}
+static const char *tui_backend_name(int use_cuda) {
+    if (!use_cuda) {
+#ifdef PP_WITH_ACCELERATE
+        return getenv("PP_APPLE_DISABLE") ? "CPU scalar/SIMD" : "Apple Accelerate/BNNS";
+#elif defined(PP_WITH_GGML)
+        return getenv("PP_GGML_DISABLE") ? "CPU AVX2" : "CPU + GGML";
+#else
+        return "CPU AVX2";
+#endif
+    }
+#ifdef PP_WITH_CUDNN
+    if (!getenv("PP_CUDNN_DISABLE"))
+        return getenv("PP_CUDNN_TF32") ? "cuDNN TF32" : "cuDNN FP32";
+#endif
+    return getenv("PP_CUDA_PRECISE") ? "CUDA FP32" : "CUDA WMMA";
+}
 
 typedef struct {pp_pillars pillars;pp_voxel_stats stats;size_t index;double prep_ms;int state;char error[256];} prep_slot;
 typedef struct {char **names;size_t count,next;int stop,started,depth;pthread_t thread;pthread_mutex_t lock;pthread_cond_t changed;prep_slot slot[2];} prep_pipe;
@@ -96,9 +112,9 @@ int main(int argc,char **argv){
         clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6;if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);
         if(!good){directory_ok=0;running=0;free(qp);break;}
         pp_tui_update_tracks(&ui,&dd,fi);
-        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,use_cuda?"CUDA":"CPU",&ui);
+        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,tui_backend_name(use_cuda),&ui);
         int action;
-        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,use_cuda?"CUDA":"CPU",&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
+        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,tui_backend_name(use_cuda),&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
         free(qp);
         if(action==PP_TUI_QUIT)running=0;else if(action==PP_TUI_PREV)fi=fi?fi-1:nf-1;else fi=(fi+1)%nf;
        }

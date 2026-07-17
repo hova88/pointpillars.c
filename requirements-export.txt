@@ -1,0 +1,4 @@
+# Offline checkpoint conversion only; the C inference runtime has no Python dependency.
+numpy>=2.0
+PyYAML>=6.0
+torch>=2.0

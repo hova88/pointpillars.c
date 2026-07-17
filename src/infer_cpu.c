@@ -1,6 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 #include "pp_infer.h"
 #include "pp_kernels.h"
+#ifdef PP_WITH_ACCELERATE
+#include "pp_apple.h"
+#endif
 #ifdef PP_WITH_GGML
 #include "pp_ggml.h"
 #endif
@@ -224,6 +227,9 @@ float *pp_output_branch(const pp_raw_output*o,int h,int b){size_t off=0,hw=(size
 void pp_cpu_conv3_relu(const float *restrict x, float *restrict y,
                        const float *restrict w, const float *restrict b,
                        int ci, int co, int hi, int wi, int stride) {
+#ifdef PP_WITH_ACCELERATE
+    if (pp_apple_conv(x, y, w, b, ci, co, hi, wi, 3, stride, 1, 1)) return;
+#endif
 #ifdef PP_WITH_GGML
     if (getenv("PP_GGML_DISABLE") == NULL &&
         pp_ggml_conv3_relu(x, y, w, b, ci, co, hi, wi, stride)) return;
@@ -417,6 +423,10 @@ static void conv3_plain_direct8(const float *restrict x,float *restrict y,
 
 void pp_cpu_conv3_plain(const float*x,float*y,const float*w,const float*b,
                         int ci,int co,int h,int wi){
+#ifdef PP_WITH_ACCELERATE
+ if(!getenv("PP_APPLE_PLAIN_DISABLE")&&
+    pp_apple_conv(x,y,w,b,ci,co,h,wi,3,1,1,0))return;
+#endif
 #ifdef __AVX2__
  static int direct=-1,oc2=-1,oc4=-1,oc8=-1;if(direct<0)direct=getenv("PP_CPU_PLAIN_ACCUM")==NULL;if(oc2<0)oc2=getenv("PP_CPU_PLAIN_OC1")==NULL;if(oc4<0)oc4=getenv("PP_CPU_PLAIN_OC2")==NULL;if(oc8<0)oc8=getenv("PP_CPU_PLAIN_OC4")==NULL;
  if(direct&&oc2&&oc4&&oc8&&!(co&7)){conv3_plain_direct8(x,y,w,b,ci,co,h,wi);return;}
@@ -427,6 +437,9 @@ void pp_cpu_conv3_plain(const float*x,float*y,const float*w,const float*b,
  conv3_plain_accum(x,y,w,b,ci,co,h,wi);
 }
 static void conv2s2_relu(const float*x,float*y,const float*w,const float*b,int ci,int co,int hi,int wi){int h=hi/2,width=wi/2;size_t ni=(size_t)hi*wi,no=(size_t)h*width;
+#ifdef PP_WITH_ACCELERATE
+ if(pp_apple_conv(x,y,w,b,ci,co,hi,wi,2,2,0,1))return;
+#endif
  #pragma omp parallel for schedule(static)
  for(int oc=0;oc<co;oc++){float*yo=y+(size_t)oc*no;for(size_t p=0;p<no;p++)yo[p]=b[oc];for(int ic=0;ic<ci;ic++){const float*xi=x+(size_t)ic*ni;const float*wk=w+((size_t)oc*ci+ic)*4;for(int oy=0;oy<h;oy++)for(int ky=0;ky<2;ky++)for(int kx=0;kx<2;kx++){float a=wk[ky*2+kx];
    #pragma omp simd
@@ -439,6 +452,9 @@ static void deconv_relu(const float *restrict x, float *restrict y,
                         const float *restrict w, const float *restrict b,
                         int ci, int hi, int wi, int k) {
     const int co = 128, ho = hi * k, wo = wi * k;
+#ifdef PP_WITH_ACCELERATE
+    if (pp_apple_deconv(x, y, w, b, ci, co, hi, wi, k, k, 1)) return;
+#endif
     size_t ni = (size_t)hi * wi, no = (size_t)ho * wo;
     #pragma omp parallel for schedule(static)
     for (int oc = 0; oc < co; ++oc) {
@@ -595,6 +611,9 @@ int pp_infer_cpu(const pp_model*m,const pp_pillars*p,pp_raw_output*out,pp_profil
  prof->heads_ms=now_ms()-t;prof->total_ms=now_ms()-begin;
 #ifdef PP_WITH_GGML
  prof->workspace_bytes+=pp_ggml_workspace_bytes();
+#endif
+#ifdef PP_WITH_ACCELERATE
+ prof->workspace_bytes+=pp_apple_cache_bytes();
 #endif
  free(pillar);free(scatter);free(a);free(b);free(upall);free(shared);free(mid);return 1;
 bad:free(pillar);free(scatter);free(a);free(b);free(upall);free(shared);free(mid);return 0;

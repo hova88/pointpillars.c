@@ -2,6 +2,10 @@
 
 > **Outcome.** The native AVX2/FMA backend reaches a 468.816 ms warm median at the reproducible 16-thread setting and 410.406 ms at the host-tuned 32-worker setting. A pinned GGML hybrid reaches 458.973 ms at 16 threads, but loses at 32. The winning design is therefore not “use one library everywhere”; it is bounded NCHW storage plus per-shape kernel selection backed by scalar oracles.
 
+On Apple Silicon the same principle selects Accelerate/BNNS per operator rather
+than attempting to translate AVX2 intrinsics. The strict M2 hybrid is detailed
+in [macOS and Apple Silicon](12-macos-apple-silicon.md).
+
 ![AVX2 input reuse and output ownership](assets/cpu-locality.svg)
 
 *Eight adjacent x positions are reused across eight output-channel accumulators. Output ownership keeps reductions private and creates enough `(channel_block,row)` tasks for OpenMP.*
@@ -114,7 +118,7 @@ The CPU profile closes `backbone_ms` before the shared convolution; CUDA closes 
 
 ## Portability and controls
 
-`make portable-test` rebuilds with `OMP=0`. `-march=native` enables AVX2/FMA on the reference host; a distributable binary should lower the ISA baseline or add runtime dispatch.
+`make portable-test` rebuilds with `OMP=0`. `-march=native` enables AVX2/FMA on the reference x86 host; a distributable binary should lower the ISA baseline or add runtime dispatch. macOS defaults to `OMP=0` and links the system Accelerate framework, whose BNNS implementation owns internal scheduling on Apple Silicon.
 
 | Switch | Restored behavior |
 |---|---|
@@ -125,6 +129,9 @@ The CPU profile closes `backbone_ms` before the shared convolution; CUDA closes 
 | `PP_CPU_PLAIN_OC2=1` | cap at two outputs |
 | `PP_CPU_PLAIN_OC1=1` | cap at one output |
 | `PP_GGML_DISABLE=1` | native convolution in the GGML binary |
+| `PP_APPLE_DISABLE=1` | full portable C path on macOS |
+| `PP_APPLE_DECONV_DISABLE=1` | C transposed convolution for A/B testing |
+| `PP_APPLE_CONV2=1` | rejected approximate 2×2/s2 BNNS experiment |
 
 ## What to remember
 

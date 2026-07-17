@@ -18,6 +18,26 @@ The controlled fixture is the lexicographically first prepared nuScenes frame: 2
 
 The 32-thread CPU result is a measured oversubscription result on this WSL topology, not a portable default. The compact CUDA result includes candidate compaction, compact D2H, canonical CPU decode, and rotated NMS. Raw mode instead transfers every output plane and exists primarily for graph-equivalence testing.
 
+### Apple Silicon reference
+
+A separate Apple M2 experiment uses a deterministic 24,000-point,
+7,881-pillar fixture and the same raw-output boundary. Ten strict-hybrid runs
+discard three warmups; the portable baseline uses three runs and discards run
+zero.
+
+| Apple M2 path | Warm median | p95 | Oracle max abs | Decision |
+|---|---:|---:|---:|---|
+| portable C | 7017.255 ms | 7029.027 ms | `6.75e-5` | strict baseline |
+| BNNS convolution only, C deconvolution | 596.381 ms | 596.779 ms | — | diagnostic |
+| strict BNNS/C hybrid | 249.490 ms | 253.699 ms | `6.51e-5` | promoted |
+| all BNNS including 2×2/s2 | 181.041 ms | 186.170 ms | `2.12` | rejected |
+
+The promoted route is `28.1×` faster than the portable baseline. It caches
+3×3 and transposed-convolution filters, rotates the `[Cin,Cout,K,K]` deblock
+weights once for BNNS' `IOHrWr` view, and leaves the numerically unsafe 2×2/s2
+operator on canonical C. The diagnostic rows cannot be compared with the WSL
+fixture or cited as task-level accuracy.
+
 ## Step 1: freeze the execution contract
 
 Do not optimize an ambiguous graph. Pin the checkpoint, YAML, exporter, tensor order, voxel rules, score threshold, NMS threshold, and output boundary first.

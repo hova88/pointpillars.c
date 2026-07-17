@@ -1,4 +1,7 @@
 #include "pp_kernels.h"
+#ifdef PP_WITH_ACCELERATE
+#include "pp_apple.h"
+#endif
 
 #include <math.h>
 #include <stdint.h>
@@ -91,6 +94,39 @@ static int run_fixture(const fixture *f, int id) {
     return 0;
 }
 
+#ifdef PP_WITH_ACCELERATE
+static int test_apple_deconv(void) {
+    enum { CI = 3, CO = 4, H = 3, W = 5, K = 2, HO = H * K, WO = W * K };
+    float x[CI * H * W], weights[CI * CO * K * K], bias[CO];
+    float reference[CO * HO * WO], actual[CO * HO * WO];
+    for (size_t i = 0; i < sizeof(x) / sizeof(x[0]); ++i) x[i] = next_value();
+    for (size_t i = 0; i < sizeof(weights) / sizeof(weights[0]); ++i)
+        weights[i] = next_value();
+    for (int i = 0; i < CO; ++i) bias[i] = next_value();
+    for (int oc = 0; oc < CO; ++oc) {
+        float *out = reference + (size_t)oc * HO * WO;
+        for (int p = 0; p < HO * WO; ++p) out[p] = bias[oc];
+        for (int ic = 0; ic < CI; ++ic) for (int iy = 0; iy < H; ++iy)
+            for (int ix = 0; ix < W; ++ix) for (int ky = 0; ky < K; ++ky)
+                for (int kx = 0; kx < K; ++kx)
+                    out[(iy * K + ky) * WO + ix * K + kx] +=
+                        x[(ic * H + iy) * W + ix] *
+                        weights[((ic * CO + oc) * K + ky) * K + kx];
+        for (int p = 0; p < HO * WO; ++p) if (out[p] < 0.0f) out[p] = 0.0f;
+    }
+    if (!pp_apple_deconv(x, actual, weights, bias, CI, CO, H, W, K, K, 1))
+        return 40;
+    float max_abs = 0.0f;
+    for (size_t i = 0; i < sizeof(actual) / sizeof(actual[0]); ++i) {
+        float delta = fabsf(reference[i] - actual[i]);
+        if (delta > max_abs) max_abs = delta;
+        if (delta > 2e-5f + 2e-5f * fabsf(reference[i])) return 41;
+    }
+    printf("apple deconv fixture: max_abs=%.3g\n", max_abs);
+    return 0;
+}
+#endif
+
 int main(void) {
     static const fixture fixtures[] = {
         {2, 8, 3, 3, 1},
@@ -104,6 +140,10 @@ int main(void) {
         int result = run_fixture(fixtures + i, (int)i);
         if (result) return result;
     }
+#ifdef PP_WITH_ACCELERATE
+    int deconv = test_apple_deconv();
+    if (deconv) return deconv;
+#endif
     puts("cpu conv fixtures: ok");
     return 0;
 }

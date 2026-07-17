@@ -84,6 +84,19 @@ These values are evidence for this synthetic regression fixture, not a nuScenes
 throughput or task-accuracy claim. Use prepared real frames and the official
 evaluation workflow before publishing dataset results.
 
+## Real nuScenes mini follow-up
+
+The complete local audit also measures a real 265,562-point ten-sweep frame
+with 28,517 live pillars. On the same 8-core Apple M2, 19 warm calls have a
+`302.983 ms` median and `315.578 ms` p95. The checkpoint oracle passes at
+`8.96e-4` maximum and `9.89e-6` mean absolute error. CPU batch completes all
+404 mini keyframes, and official `mini_val` evaluation reproduces mAP `0.2055`
+and NDS `0.3280`.
+
+See [the complete local run](13-local-macos-nuscenes-mini.md) for archive
+placement on macOS, data invariants, command coverage, artifact hashes, and the
+real-frame TUI recording.
+
 ## Benchmark and validate your Mac
 
 ```sh

@@ -39,6 +39,11 @@ reduced warm median from `7017.255 ms` to `249.490 ms` (`28.1×`) and passed the
 checkpoint oracle at `6.51e-5` maximum absolute error. See the dedicated
 [macOS and Apple Silicon chapter](12-macos-apple-silicon.md).
 
+A second Apple M2 audit uses a real 265,562-point, ten-sweep nuScenes mini
+frame: `302.983 ms` warm median, `8.96e-4` oracle maximum error, and 404/404
+successful CPU batch outputs. The full evidence and `/data` setup are in the
+[local macOS + nuScenes mini chapter](13-local-macos-nuscenes-mini.md).
+
 ## Read this like a worklog
 
 1. [The frozen model contract](01-model-contract.md) — shapes, layouts, classes, and why specialization is legitimate.
@@ -53,6 +58,7 @@ checkpoint oracle at `6.51e-5` maximum absolute error. See the dedicated
 10. [Extension map](10-extension-guide.md) — where to add a backend, operator, output format, or visualization without breaking the contract.
 11. [Performance workflow](11-performance-workflow.md) — the complete measure/change/prove sequence, results, and negative experiments.
 12. [macOS and Apple Silicon](12-macos-apple-silicon.md) — native build, BNNS plan caching, the strict shape gate, and M2 evidence.
+13. [Local macOS + nuScenes mini](13-local-macos-nuscenes-mini.md) — extraction, real ten-sweep data, every local workflow, official metrics, and checked TUI media.
 
 ## Repository map
 

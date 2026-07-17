@@ -1,3 +1,4 @@
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "pointpillars.h"
 #include "pp_infer.h"
@@ -16,6 +17,9 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <pthread.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 static int write_outputs(const char *path, const pp_raw_output *o) {
     FILE *f=fopen(path,"wb"); if(!f)return 0;
@@ -67,6 +71,190 @@ static prep_slot *prep_pipe_get(prep_pipe*p,size_t i){prep_slot*s=&p->slot[i%(si
 static void prep_pipe_release(prep_pipe*p,prep_slot*s){pthread_mutex_lock(&p->lock);s->state=0;pthread_cond_broadcast(&p->changed);pthread_mutex_unlock(&p->lock);}
 static void prep_pipe_end(prep_pipe*p){if(p->started){pthread_mutex_lock(&p->lock);p->stop=1;pthread_cond_broadcast(&p->changed);pthread_mutex_unlock(&p->lock);pthread_join(p->thread,NULL);}pp_pillars_free(&p->slot[0].pillars);pp_pillars_free(&p->slot[1].pillars);pthread_cond_destroy(&p->changed);pthread_mutex_destroy(&p->lock);}
 
+typedef struct {
+    float *points;
+    size_t point_count;
+    pp_box *boxes;
+    size_t box_count;
+    size_t frame;
+    double inference_ms;
+    int ok;
+    char error[256];
+} tui_result;
+
+typedef struct {
+    pp_model *model;
+    pp_raw_output *raw;
+    char **names;
+    size_t frame_count;
+    int use_cuda, compact_cuda;
+    pp_pillars pillars;
+    pp_detections detections;
+    pthread_t thread;
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    int started, stop, have_request;
+    size_t request_frame;
+    unsigned long generation;
+    tui_result *ready;
+} tui_pipe;
+
+static void tui_result_free(tui_result *result) {
+    if (!result) return;
+    free(result->points);
+    free(result->boxes);
+    free(result);
+}
+
+static void *tui_prepare_frames(void *argument) {
+    tui_pipe *pipe = argument;
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#endif
+    for (;;) {
+        pthread_mutex_lock(&pipe->lock);
+        while (!pipe->stop && !pipe->have_request)
+            pthread_cond_wait(&pipe->changed, &pipe->lock);
+        if (pipe->stop) {
+            pthread_mutex_unlock(&pipe->lock);
+            return NULL;
+        }
+        size_t frame = pipe->request_frame;
+        unsigned long generation = pipe->generation;
+        pipe->have_request = 0;
+        pthread_mutex_unlock(&pipe->lock);
+
+        tui_result *result = calloc(1, sizeof(*result));
+        if (!result) {
+            pthread_mutex_lock(&pipe->lock);
+            pipe->stop = 1;
+            pthread_cond_broadcast(&pipe->changed);
+            pthread_mutex_unlock(&pipe->lock);
+            return NULL;
+        }
+        float *points = NULL;
+        size_t point_count = 0;
+        pp_voxel_stats stats;
+        pp_profile profile;
+        int good = result &&
+            pp_load_points(pipe->names[frame], 5, &points, &point_count,
+                           result->error, sizeof(result->error)) &&
+            pp_voxelize(points, point_count, 5, &pipe->pillars, &stats);
+        double begin = monotonic_ms();
+#ifdef PP_WITH_CUDA
+        if (good && pipe->use_cuda)
+            good = pipe->compact_cuda ?
+                pp_infer_cuda_detect(pipe->model, &pipe->pillars,
+                                     &pipe->detections, .1f, .2f, &profile,
+                                     result->error, sizeof(result->error)) :
+                pp_infer_cuda(pipe->model, &pipe->pillars, pipe->raw, &profile,
+                              result->error, sizeof(result->error));
+        else
+#endif
+        if (good)
+            good = pp_infer_cpu(pipe->model, &pipe->pillars, pipe->raw, &profile,
+                                result->error, sizeof(result->error));
+        double elapsed = monotonic_ms() - begin;
+        if (good && !pipe->compact_cuda)
+            good = pp_decode(pipe->raw, .1f, .2f, &pipe->detections);
+        if (good && pipe->detections.count) {
+            result->boxes = malloc(pipe->detections.count * sizeof(*result->boxes));
+            if (!result->boxes) {
+                snprintf(result->error, sizeof(result->error),
+                         "out of memory copying TUI detections");
+                good = 0;
+            } else {
+                memcpy(result->boxes, pipe->detections.boxes,
+                       pipe->detections.count * sizeof(*result->boxes));
+            }
+        }
+        if (!good && !result->error[0])
+            snprintf(result->error, sizeof(result->error),
+                     "TUI preparation, inference, or decode failed");
+        result->points = points;
+        result->point_count = point_count;
+        result->box_count = good ? pipe->detections.count : 0;
+        result->frame = frame;
+        result->inference_ms = elapsed;
+        result->ok = good;
+
+        pthread_mutex_lock(&pipe->lock);
+        if (pipe->stop || generation != pipe->generation) {
+            pthread_mutex_unlock(&pipe->lock);
+            tui_result_free(result);
+            continue;
+        }
+        tui_result_free(pipe->ready);
+        pipe->ready = result;
+        pthread_cond_broadcast(&pipe->changed);
+        pthread_mutex_unlock(&pipe->lock);
+    }
+}
+
+static int tui_pipe_start(tui_pipe *pipe, pp_model *model, pp_raw_output *raw,
+                          char **names, size_t frame_count,
+                          int use_cuda, int compact_cuda) {
+    memset(pipe, 0, sizeof(*pipe));
+    pipe->model = model;
+    pipe->raw = raw;
+    pipe->names = names;
+    pipe->frame_count = frame_count;
+    pipe->use_cuda = use_cuda;
+    pipe->compact_cuda = compact_cuda;
+    if (pthread_mutex_init(&pipe->lock, NULL)) return 0;
+    if (pthread_cond_init(&pipe->changed, NULL)) {
+        pthread_mutex_destroy(&pipe->lock);
+        return 0;
+    }
+    if (!pp_pillars_alloc(&pipe->pillars) ||
+        !pp_detections_alloc(&pipe->detections, 1000) ||
+        pthread_create(&pipe->thread, NULL, tui_prepare_frames, pipe)) {
+        pp_pillars_free(&pipe->pillars);
+        pp_detections_free(&pipe->detections);
+        pthread_cond_destroy(&pipe->changed);
+        pthread_mutex_destroy(&pipe->lock);
+        return 0;
+    }
+    pipe->started = 1;
+    return 1;
+}
+
+static void tui_pipe_request(tui_pipe *pipe, size_t frame) {
+    pthread_mutex_lock(&pipe->lock);
+    ++pipe->generation;
+    pipe->request_frame = frame % pipe->frame_count;
+    pipe->have_request = 1;
+    tui_result_free(pipe->ready);
+    pipe->ready = NULL;
+    pthread_cond_broadcast(&pipe->changed);
+    pthread_mutex_unlock(&pipe->lock);
+}
+
+static tui_result *tui_pipe_take(tui_pipe *pipe, int wait) {
+    pthread_mutex_lock(&pipe->lock);
+    while (wait && !pipe->ready && !pipe->stop)
+        pthread_cond_wait(&pipe->changed, &pipe->lock);
+    tui_result *result = pipe->ready;
+    pipe->ready = NULL;
+    pthread_mutex_unlock(&pipe->lock);
+    return result;
+}
+
+static void tui_pipe_end(tui_pipe *pipe) {
+    if (pipe->started) {
+        pthread_mutex_lock(&pipe->lock);
+        pipe->stop = 1;
+        pthread_cond_broadcast(&pipe->changed);
+        pthread_mutex_unlock(&pipe->lock);
+        pthread_join(pipe->thread, NULL);
+    }
+    tui_result_free(pipe->ready);
+    pp_pillars_free(&pipe->pillars);
+    pp_detections_free(&pipe->detections);
+    pthread_cond_destroy(&pipe->changed);
+    pthread_mutex_destroy(&pipe->lock);
+}
+
 int main(int argc,char **argv){
     if(argc<3){usage(argv[0]);return 2;}
     pp_model m;char error[256]={0};
@@ -98,28 +286,34 @@ int main(int argc,char **argv){
       pp_raw_output ro={0};if(!compact_cuda&&!pp_output_alloc(&ro)){pp_model_close(&m);return 1;}
       if(is_tui){
        pp_tui_state ui;if(!pp_tui_begin(&ui)){fprintf(stderr,"error: TUI requires an interactive terminal\n");pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}
-       pp_pillars vp={0};pp_detections dd={0};
-       if(!pp_pillars_alloc(&vp)||!pp_detections_alloc(&dd,1000)){pp_tui_end();pp_pillars_free(&vp);pp_detections_free(&dd);pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}
-       size_t fi=0;int running=nf>0;
-       while(running){float*qp=NULL;size_t qn=0;pp_voxel_stats vs;pp_profile pr;
-        if(!pp_load_points(names[fi],5,&qp,&qn,error,sizeof error)||!pp_voxelize(qp,qn,5,&vp,&vs)){directory_ok=0;running=0;free(qp);break;}
-        struct timespec ta,tb;clock_gettime(CLOCK_MONOTONIC,&ta);
-#ifdef PP_WITH_CUDA
-        int good=use_cuda?(compact_cuda?pp_infer_cuda_detect(&m,&vp,&dd,.1f,.2f,&pr,error,sizeof error):pp_infer_cuda(&m,&vp,&ro,&pr,error,sizeof error)):pp_infer_cpu(&m,&vp,&ro,&pr,error,sizeof error);
-#else
-        int good=pp_infer_cpu(&m,&vp,&ro,&pr,error,sizeof error);
+#ifdef __APPLE__
+       pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
-        clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6;if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);
-        if(!good){directory_ok=0;running=0;free(qp);break;}
-        pp_tui_update_tracks(&ui,&dd,fi);
-        const char *backend=tui_backend_name(use_cuda);
-        pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,backend,&ui);
-        int action;
-        for(;;){action=pp_tui_poll(&ui,ui.paused?-1:100);if(action==PP_TUI_REDRAW){pp_tui_render(qp,qn,5,&dd,fi,nf,elapsed,backend,&ui);continue;}if(action==PP_TUI_NONE&&!ui.paused)action=PP_TUI_NEXT;if(action!=PP_TUI_NONE)break;}
-        free(qp);
-        if(action==PP_TUI_QUIT)running=0;else if(action==PP_TUI_PREV)fi=fi?fi-1:nf-1;else fi=(fi+1)%nf;
+       tui_pipe pipe;
+       if(!tui_pipe_start(&pipe,&m,&ro,names,nf,use_cuda,compact_cuda)){pp_tui_end();pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return 1;}
+       tui_pipe_request(&pipe,0);
+       tui_result *current=tui_pipe_take(&pipe,1);
+       int running=current&&current->ok,manual_pending=0;
+       size_t fi=running?current->frame:0,requested=fi;
+       const char *backend=tui_backend_name(use_cuda);
+       if(!running){directory_ok=0;snprintf(error,sizeof error,"%s",current?current->error:"TUI worker stopped before the first frame");}
+       if(running){pp_detections view={current->boxes,current->box_count,current->box_count};pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
+       while(running){
+        int action=pp_tui_poll(&ui,16);
+        if(action==PP_TUI_QUIT)break;
+        if(action==PP_TUI_NEXT||action==PP_TUI_PREV){size_t base=manual_pending?requested:fi;requested=action==PP_TUI_PREV?(base?base-1:nf-1):(base+1)%nf;manual_pending=1;tui_pipe_request(&pipe,requested);}
+        pp_detections view={current->boxes,current->box_count,current->box_count};
+        if(action==PP_TUI_REDRAW)pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);
+        else if(action==PP_TUI_NONE&&!ui.paused&&ui.animate_points){pp_tui_advance_animation(&ui);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);}
+        tui_result *next=(!ui.paused||manual_pending)?tui_pipe_take(&pipe,0):NULL;
+        if(!next)continue;
+        if(!next->ok){snprintf(error,sizeof error,"%s",next->error);tui_result_free(next);directory_ok=0;break;}
+        tui_result_free(current);current=next;fi=current->frame;requested=fi;manual_pending=0;
+        view=(pp_detections){current->boxes,current->box_count,current->box_count};
+        pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);
+        if(!ui.paused){requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
        }
-       pp_tui_end();pp_pillars_free(&vp);pp_detections_free(&dd);if(!running&&error[0])fprintf(stderr,"error: %s\n",error);
+       pp_tui_end();tui_pipe_end(&pipe);tui_result_free(current);if(error[0])fprintf(stderr,"error: %s\n",error);
       } else {prep_pipe pipe;pp_detections dd={0};int depth=getenv("PP_NO_PREFETCH")?1:2,pipeline=prep_pipe_start(&pipe,names,nf,depth);
        if(!pipeline||!pp_detections_alloc(&dd,1000))directory_ok=0;
        else for(size_t fi=0;fi<nf;fi++){pp_profile pr;prep_slot*s=prep_pipe_get(&pipe,fi);if(s->state==3){fprintf(stderr,"error: %s\n",s->error);directory_ok=0;break;}

@@ -19,9 +19,12 @@
 enum {
     PIX_GRID = 1,
     PIX_AXIS,
-    PIX_GROUND,
-    PIX_LOW,
-    PIX_HIGH,
+    PIX_POINT_OLD,
+    PIX_POINT_MID,
+    PIX_POINT_GROUND,
+    PIX_POINT_LOW,
+    PIX_POINT_HIGH,
+    PIX_POINT_FLOW,
     PIX_TRACK_BASE = 10,
     PIX_VELOCITY_BASE = 20,
     PIX_BOX_BASE = 30,
@@ -187,6 +190,8 @@ void pp_tui_state_init(pp_tui_state *state) {
     state->show_velocity = 1;
     state->show_grid = 1;
     state->show_tracks = 1;
+    state->animate_points = 1;
+    state->perspective = 1;
     state->class_mask = 0x3ffu;
     state->score_threshold = 0.2f;
     state->next_track_id = 1;
@@ -269,7 +274,13 @@ int pp_tui_poll(pp_tui_state *state, int timeout_ms) {
     else if (value == 'v' || value == 'V') state->show_velocity = !state->show_velocity;
     else if (value == 'g' || value == 'G') state->show_grid = !state->show_grid;
     else if (value == 't' || value == 'T') state->show_tracks = !state->show_tracks;
-    else if (value == 'h' || value == 'H' || value == '?') state->show_help = !state->show_help;
+    else if (value == 'f' || value == 'F') state->animate_points = !state->animate_points;
+    else if (value == 'i' || value == 'I') state->show_sidebar = !state->show_sidebar;
+    else if (value == 'm' || value == 'M') state->perspective = !state->perspective;
+    else if (value == 'h' || value == 'H' || value == '?') {
+        state->show_help = !state->show_help;
+        if (state->show_help) state->show_sidebar = 1;
+    }
     else if (value == 'c' || value == 'C') state->class_mask = 0x3ffu;
     else if (value >= '0' && value <= '9') state->class_mask ^= 1u << (value - '0');
     else if (value == '[') {
@@ -284,6 +295,10 @@ int pp_tui_poll(pp_tui_state *state, int timeout_ms) {
     return PP_TUI_REDRAW;
 }
 
+void pp_tui_advance_animation(pp_tui_state *state) {
+    if (state && state->animate_points) ++state->animation_tick;
+}
+
 static void plot(unsigned char *pixels, int width, int height,
                  int x, int y, unsigned char value) {
     if ((unsigned)x >= (unsigned)width || (unsigned)y >= (unsigned)height) return;
@@ -291,8 +306,58 @@ static void plot(unsigned char *pixels, int width, int height,
     if (pixels[index] < value) pixels[index] = value;
 }
 
+static void plot_point(unsigned char *pixels, uint32_t *density,
+                       int width, int height, int x, int y,
+                       unsigned char value) {
+    if ((unsigned)x >= (unsigned)width || (unsigned)y >= (unsigned)height) return;
+    size_t index = (size_t)y * (size_t)width + (size_t)x;
+    ++density[index];
+    if (pixels[index] < value) pixels[index] = value;
+}
+
+static int line_code(int x, int y, int width, int height) {
+    return (x < 0 ? 1 : x >= width ? 2 : 0) |
+           (y < 0 ? 4 : y >= height ? 8 : 0);
+}
+
+static int clip_line(int *x0, int *y0, int *x1, int *y1,
+                     int width, int height) {
+    int code0 = line_code(*x0, *y0, width, height);
+    int code1 = line_code(*x1, *y1, width, height);
+    for (;;) {
+        if (!(code0 | code1)) return 1;
+        if (code0 & code1) return 0;
+        int code = code0 ? code0 : code1;
+        double x = 0.0;
+        double y = 0.0;
+        if (code & 8) {
+            y = height - 1;
+            x = *x0 + (*x1 - *x0) * (y - *y0) / (double)(*y1 - *y0);
+        } else if (code & 4) {
+            y = 0.0;
+            x = *x0 + (*x1 - *x0) * (y - *y0) / (double)(*y1 - *y0);
+        } else if (code & 2) {
+            x = width - 1;
+            y = *y0 + (*y1 - *y0) * (x - *x0) / (double)(*x1 - *x0);
+        } else {
+            x = 0.0;
+            y = *y0 + (*y1 - *y0) * (x - *x0) / (double)(*x1 - *x0);
+        }
+        if (code == code0) {
+            *x0 = (int)lrint(x);
+            *y0 = (int)lrint(y);
+            code0 = line_code(*x0, *y0, width, height);
+        } else {
+            *x1 = (int)lrint(x);
+            *y1 = (int)lrint(y);
+            code1 = line_code(*x1, *y1, width, height);
+        }
+    }
+}
+
 static void draw_line(unsigned char *pixels, int width, int height,
                       int x0, int y0, int x1, int y1, unsigned char value) {
+    if (!clip_line(&x0, &y0, &x1, &y1, width, height)) return;
     int dx = abs(x1 - x0);
     int sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0);
@@ -320,20 +385,50 @@ static void encode_braille(unsigned codepoint, char text[4]) {
     text[3] = '\0';
 }
 
-static void project(float x, float y, const pp_tui_state *state,
-                    int width, int height, int *pixel_x, int *pixel_y) {
+typedef struct {
+    const pp_tui_state *state;
+    float cosine, sine;
+    float scan_cosine, scan_sine;
+    float sweep;
+} projection;
+
+static void project3(float x, float y, float z, const projection *view,
+                     int width, int height, int *pixel_x, int *pixel_y) {
+    const pp_tui_state *state = view->state;
     float dx = x - state->center_x;
     float dy = y - state->center_y;
-    float cosine = cosf(state->yaw);
-    float sine = sinf(state->yaw);
-    float forward = dx * cosine - dy * sine;
-    float lateral = dx * sine + dy * cosine;
+    float forward = dx * view->cosine - dy * view->sine;
+    float lateral = dx * view->sine + dy * view->cosine;
+    if (state->perspective) {
+        const float camera_distance = 72.0f;
+        const float camera_height = 34.0f;
+        float depth_axis = forward + camera_distance;
+        float vertical_axis = z - camera_height;
+        float depth = depth_axis * 0.904819f - vertical_axis * 0.425797f;
+        float vertical = depth_axis * 0.425797f + vertical_axis * 0.904819f;
+        if (depth <= 1.0f) {
+            *pixel_x = -4 * width;
+            *pixel_y = -4 * height;
+            return;
+        }
+        float focal_x = (float)width * 0.70f;
+        float focal_y = (float)height * 1.25f;
+        float focal = (focal_x < focal_y ? focal_x : focal_y) * state->zoom;
+        *pixel_x = (int)lrintf((float)(width - 1) * 0.5f + lateral * focal / depth);
+        *pixel_y = (int)lrintf((float)(height - 1) * 0.48f - vertical * focal / depth);
+        return;
+    }
     float half_range = 51.2f / state->zoom;
     float sx = (float)(width - 1) / (2.0f * half_range);
     float sy = (float)(height - 1) / (2.0f * half_range);
     float scale = sx < sy ? sx : sy;
     *pixel_x = (int)lrintf((float)(width - 1) * 0.5f + lateral * scale);
     *pixel_y = (int)lrintf((float)(height - 1) * 0.5f - forward * scale);
+}
+
+static void project(float x, float y, const projection *view,
+                    int width, int height, int *pixel_x, int *pixel_y) {
+    project3(x, y, 0.0f, view, width, height, pixel_x, pixel_y);
 }
 
 void pp_tui_update_tracks(pp_tui_state *state,
@@ -439,7 +534,7 @@ static const pp_tui_track *track_for_box(const pp_tui_state *state,
 }
 
 static void draw_grid(unsigned char *pixels, int width, int height,
-                      const pp_tui_state *state) {
+                      const projection *view) {
     const float pi = 3.14159265358979323846f;
     for (int radius = 10; radius <= 50; radius += 10) {
         int previous_x = 0;
@@ -449,7 +544,7 @@ static void draw_grid(unsigned char *pixels, int width, int height,
             int x;
             int y;
             project((float)radius * cosf(angle), (float)radius * sinf(angle),
-                    state, width, height, &x, &y);
+                    view, width, height, &x, &y);
             if (step) draw_line(pixels, width, height, previous_x, previous_y,
                                 x, y, PIX_GRID);
             previous_x = x;
@@ -460,70 +555,101 @@ static void draw_grid(unsigned char *pixels, int width, int height,
     int y0;
     int x1;
     int y1;
-    project(-55.0f, 0.0f, state, width, height, &x0, &y0);
-    project(55.0f, 0.0f, state, width, height, &x1, &y1);
+    project(-55.0f, 0.0f, view, width, height, &x0, &y0);
+    project(55.0f, 0.0f, view, width, height, &x1, &y1);
     draw_line(pixels, width, height, x0, y0, x1, y1, PIX_AXIS);
-    project(0.0f, -70.0f, state, width, height, &x0, &y0);
-    project(0.0f, 70.0f, state, width, height, &x1, &y1);
+    project(0.0f, -70.0f, view, width, height, &x0, &y0);
+    project(0.0f, 70.0f, view, width, height, &x1, &y1);
     draw_line(pixels, width, height, x0, y0, x1, y1, PIX_AXIS);
 }
 
 static void draw_ego(unsigned char *pixels, int width, int height,
-                     const pp_tui_state *state) {
+                     const projection *view) {
     const float x[3] = {2.2f, -1.6f, -1.6f};
     const float y[3] = {0.0f, -1.1f, 1.1f};
     int px[3];
     int py[3];
     for (int index = 0; index < 3; ++index)
-        project(x[index], y[index], state, width, height, px + index, py + index);
+        project(x[index], y[index], view, width, height, px + index, py + index);
     for (int index = 0; index < 3; ++index)
         draw_line(pixels, width, height, px[index], py[index],
                   px[(index + 1) % 3], py[(index + 1) % 3], PIX_EGO);
 }
 
 static void draw_box(unsigned char *pixels, int width, int height,
-                     const pp_box *box, const pp_tui_state *state,
+                     const pp_box *box, const projection *view,
                      unsigned char ink) {
+    const pp_tui_state *state = view->state;
     float cosine = cosf(box->yaw);
     float sine = sinf(box->yaw);
     float half_x = box->dx * 0.5f;
     float half_y = box->dy * 0.5f;
-    int x[4];
-    int y[4];
-    for (int corner = 0; corner < 4; ++corner) {
-        float local_x = (corner == 0 || corner == 3) ? -half_x : half_x;
-        float local_y = corner < 2 ? -half_y : half_y;
-        project(box->x + local_x * cosine - local_y * sine,
-                box->y + local_x * sine + local_y * cosine,
-                state, width, height, x + corner, y + corner);
+    int x[2][4];
+    int y[2][4];
+    for (int level = 0; level < 2; ++level) {
+        float z = box->z + (level ? 0.5f : -0.5f) * box->dz;
+        for (int corner = 0; corner < 4; ++corner) {
+            float local_x = (corner == 0 || corner == 3) ? -half_x : half_x;
+            float local_y = corner < 2 ? -half_y : half_y;
+            project3(box->x + local_x * cosine - local_y * sine,
+                     box->y + local_x * sine + local_y * cosine, z,
+                     view, width, height, x[level] + corner, y[level] + corner);
+        }
+        for (int corner = 0; corner < 4; ++corner)
+            draw_line(pixels, width, height, x[level][corner], y[level][corner],
+                      x[level][(corner + 1) & 3], y[level][(corner + 1) & 3], ink);
     }
-    for (int corner = 0; corner < 4; ++corner)
-        draw_line(pixels, width, height, x[corner], y[corner],
-                  x[(corner + 1) & 3], y[(corner + 1) & 3], ink);
+    if (state->perspective)
+        for (int corner = 0; corner < 4; ++corner)
+            draw_line(pixels, width, height, x[0][corner], y[0][corner],
+                      x[1][corner], y[1][corner], ink);
     int center_x;
     int center_y;
     int nose_x;
     int nose_y;
-    project(box->x, box->y, state, width, height, &center_x, &center_y);
-    project(box->x + half_x * cosine, box->y + half_x * sine,
-            state, width, height, &nose_x, &nose_y);
+    project3(box->x, box->y, box->z, view, width, height, &center_x, &center_y);
+    project3(box->x + half_x * cosine, box->y + half_x * sine, box->z,
+             view, width, height, &nose_x, &nose_y);
     draw_line(pixels, width, height, center_x, center_y, nose_x, nose_y, ink);
 }
 
-static void draw_scene(unsigned char *pixels, int width, int height,
+static unsigned char point_ink(const float *point, size_t stride,
+                               const projection *view) {
+    float intensity = stride >= 4 ? fmaxf(0.0f, fminf(1.0f, point[3])) : 1.0f;
+    float lag = stride >= 5 ? fmaxf(0.0f, fminf(1.0f, point[4])) : 0.0f;
+    float along = point[0] * view->scan_cosine + point[1] * view->scan_sine;
+    float across = point[0] * view->scan_sine - point[1] * view->scan_cosine;
+    int in_scan_wedge = along > 0.0f &&
+        across * across < 0.010067f * along * along;
+    int flow = view->state->animate_points &&
+        (in_scan_wedge || fabsf(lag - view->sweep) < 0.035f);
+    if (flow) return PIX_POINT_FLOW;
+    if (lag > 0.55f) return PIX_POINT_OLD;
+    if (lag > 0.15f || intensity < 0.08f) return PIX_POINT_MID;
+    return point[2] < -1.0f ? PIX_POINT_GROUND :
+           point[2] < 0.75f ? PIX_POINT_LOW : PIX_POINT_HIGH;
+}
+
+static void draw_scene(unsigned char *pixels, uint32_t *density,
+                       int width, int height,
                        const float *points, size_t count, size_t stride,
                        const pp_detections *detections, int selected,
                        const pp_tui_state *state) {
-    if (state->show_grid) draw_grid(pixels, width, height, state);
+    float animated_yaw = state->perspective && state->animate_points ?
+        0.045f * sinf((float)state->animation_tick * 0.055f) : 0.0f;
+    float scan = (float)state->animation_tick * 0.22f;
+    projection view = {state, cosf(state->yaw + animated_yaw),
+                       sinf(state->yaw + animated_yaw), cosf(scan), sinf(scan),
+                       fmodf((float)state->animation_tick * 0.045f, 1.0f)};
+    if (state->show_grid) draw_grid(pixels, width, height, &view);
     if (state->show_points) {
         for (size_t index = 0; index < count; ++index) {
             const float *point = points + index * stride;
+            unsigned char ink = point_ink(point, stride, &view);
             int x;
             int y;
-            project(point[0], point[1], state, width, height, &x, &y);
-            unsigned char ink = point[2] < -1.0f ? PIX_GROUND :
-                                point[2] < 0.75f ? PIX_LOW : PIX_HIGH;
-            plot(pixels, width, height, x, y, ink);
+            project3(point[0], point[1], point[2], &view, width, height, &x, &y);
+            plot_point(pixels, density, width, height, x, y, ink);
         }
     }
     if (state->show_tracks) {
@@ -536,9 +662,9 @@ static void draw_scene(unsigned char *pixels, int width, int height,
                 int y0;
                 int x1;
                 int y1;
-                project(track->x[sample - 1], track->y[sample - 1], state,
+                project(track->x[sample - 1], track->y[sample - 1], &view,
                         width, height, &x0, &y0);
-                project(track->x[sample], track->y[sample], state,
+                project(track->x[sample], track->y[sample], &view,
                         width, height, &x1, &y1);
                 draw_line(pixels, width, height, x0, y0, x1, y1,
                           (unsigned char)(PIX_TRACK_BASE + track->class_id));
@@ -554,16 +680,16 @@ static void draw_scene(unsigned char *pixels, int width, int height,
             if (state->show_boxes) {
                 unsigned char ink = index == (size_t)selected ? PIX_SELECTED :
                     (unsigned char)(PIX_BOX_BASE + box->class_id);
-                draw_box(pixels, width, height, box, state, ink);
+                draw_box(pixels, width, height, box, &view, ink);
             }
             if (state->show_velocity && box->vx * box->vx + box->vy * box->vy > 0.01f) {
                 int x0;
                 int y0;
                 int x1;
                 int y1;
-                project(box->x, box->y, state, width, height, &x0, &y0);
-                project(box->x + box->vx, box->y + box->vy, state,
-                        width, height, &x1, &y1);
+                project3(box->x, box->y, box->z, &view, width, height, &x0, &y0);
+                project3(box->x + box->vx, box->y + box->vy, box->z, &view,
+                         width, height, &x1, &y1);
                 unsigned char ink = index == (size_t)selected ? PIX_SELECTED :
                     (unsigned char)(PIX_VELOCITY_BASE + box->class_id);
                 draw_line(pixels, width, height, x0, y0, x1, y1, ink);
@@ -571,10 +697,10 @@ static void draw_scene(unsigned char *pixels, int width, int height,
             }
         }
     }
-    draw_ego(pixels, width, height, state);
+    draw_ego(pixels, width, height, &view);
 }
 
-static void set_pixel_style(text_buffer *buffer, int kind) {
+static void set_pixel_style(text_buffer *buffer, int kind, int density_grade) {
     int color = 250;
     int mode = 0;
     if (kind == 0) {
@@ -587,14 +713,23 @@ static void set_pixel_style(text_buffer *buffer, int kind) {
     } else if (kind == PIX_AXIS) {
         color = 243;
         mode = 2;
-    } else if (kind == PIX_GROUND) {
-        color = 245;
+    } else if (kind == PIX_POINT_OLD) {
+        color = 24;
         mode = 2;
-    } else if (kind == PIX_LOW) {
+    } else if (kind == PIX_POINT_MID) {
+        color = 31;
+        mode = 2;
+    } else if (kind == PIX_POINT_GROUND) {
+        color = 246;
+        mode = 2;
+    } else if (kind == PIX_POINT_LOW) {
         color = 45;
         mode = 2;
-    } else if (kind == PIX_HIGH) {
+    } else if (kind == PIX_POINT_HIGH) {
         color = 118;
+    } else if (kind == PIX_POINT_FLOW) {
+        color = 87;
+        mode = 1;
     } else if (kind >= PIX_TRACK_BASE && kind < PIX_VELOCITY_BASE) {
         color = class_color[kind - PIX_TRACK_BASE];
         mode = 2;
@@ -610,29 +745,40 @@ static void set_pixel_style(text_buffer *buffer, int kind) {
         color = 214;
         mode = 1;
     }
+    if (kind >= PIX_POINT_OLD && kind <= PIX_POINT_FLOW) {
+        mode = density_grade <= 1 ? 2 : density_grade == 2 ? 0 : 1;
+        if (kind == PIX_POINT_FLOW && mode < 1) mode = 1;
+    }
     buffer_printf(buffer, "\033[%d;38;5;%d;48;5;233m", mode, color);
 }
 
 static void render_braille_row(text_buffer *buffer, const unsigned char *pixels,
+                                const uint32_t *density,
                                 int pixel_width, int character_row,
                                 int character_width) {
     static const int dot[4][2] = {{1, 8}, {2, 16}, {4, 32}, {64, 128}};
-    int previous_kind = -1;
+    int previous_style = -1;
     for (int column = 0; column < character_width; ++column) {
         int mask = 0;
         int kind = 0;
+        size_t density_total = 0;
         for (int y = 0; y < 4; ++y) {
             for (int x = 0; x < 2; ++x) {
-                unsigned char value = pixels[
+                size_t index =
                     (size_t)(character_row * 4 + y) * (size_t)pixel_width +
-                    (size_t)(column * 2 + x)];
+                    (size_t)(column * 2 + x);
+                unsigned char value = pixels[index];
                 if (value) mask |= dot[y][x];
                 if (value > kind) kind = value;
+                density_total += density[index];
             }
         }
-        if (kind != previous_kind) {
-            set_pixel_style(buffer, kind);
-            previous_kind = kind;
+        int grade = density_total <= 2 ? 1 : density_total <= 8 ? 2 : 3;
+        if (kind < PIX_POINT_OLD || kind > PIX_POINT_FLOW) grade = 0;
+        int style = kind * 4 + grade;
+        if (style != previous_style) {
+            set_pixel_style(buffer, kind, grade);
+            previous_style = style;
         }
         if (mask) {
             char encoded[4];
@@ -674,10 +820,11 @@ static void append_header(text_buffer *buffer, int columns, size_t frame,
     snprintf(backend_text, sizeof(backend_text), "  [ %s ]", backend);
     snprintf(state_text, sizeof(state_text), "  ● %s", state->paused ? "PAUSED" : "PLAY");
     snprintf(metric_text, sizeof(metric_text), "INFER %7.2f ms ", inference_ms);
-    int left = 13 + 14 + text_cells(backend_text) + text_cells(state_text);
+    int left = text_cells(" POINTPILLARS") + text_cells("  /  LIVE LIDAR ") +
+               text_cells(backend_text) + text_cells(state_text);
     int right = text_cells(metric_text);
     buffer_puts(buffer, "\033[1;38;5;51;48;5;233m POINTPILLARS");
-    buffer_puts(buffer, "\033[2;38;5;248;48;5;233m  /  LIVE BEV ");
+    buffer_puts(buffer, "\033[2;38;5;248;48;5;233m  /  LIVE LIDAR ");
     buffer_puts(buffer, "\033[38;5;255;48;5;233m");
     buffer_puts(buffer, backend_text);
     buffer_printf(buffer, "\033[1;38;5;%d;48;5;233m%s",
@@ -733,7 +880,9 @@ static void append_side(text_buffer *buffer, int row, int width,
             "  z / e      rotate", "  + / -      zoom",
             "  [ / ]      select object", "  , / .      score gate",
             "  0–9 / c    classes / all", "  l b v g t  scene layers",
-            "  r          reset camera", "  h / ?      close help",
+            "  f / i      flow / inspector", "  m          3D / BEV mode",
+            "  r          reset camera",
+            "  h / ?      close help",
             "  q          quit", "", "  Changes redraw instantly;",
             "  paused frames never rerun", "  model inference."
         };
@@ -805,13 +954,21 @@ static void append_side(text_buffer *buffer, int row, int width,
         snprintf(text, sizeof(text), "  zoom    %.2fx  ·  yaw %+.0f°",
                  state->zoom, state->yaw * 57.2957795f);
     } else if (row == 28) {
-        snprintf(text, sizeof(text), "  range   ±%.1f m · 10 m rings", 51.2f / state->zoom);
+        snprintf(text, sizeof(text), "  mode    %s · 10 m rings",
+                 state->perspective ? "perspective 3D" : "top-down BEV");
     }
     side_line(buffer, width, style, text);
 }
 
-static void append_canvas_border(text_buffer *buffer, int width, int top) {
-    const char *title = " BEV · 10 m RANGE RINGS ";
+static void append_canvas_border(text_buffer *buffer, int width, int top,
+                                 const pp_tui_state *state) {
+    const char *title;
+    if (state->perspective)
+        title = state->animate_points ? " 3D LIDAR · SWEEP FLOW · HEIGHT + AGE " :
+                                       " 3D LIDAR · HEIGHT + INTENSITY ";
+    else
+        title = state->animate_points ? " BEV · SWEEP FLOW · 10 m RINGS " :
+                                       " BEV · 10 m RANGE RINGS ";
     int title_width = text_cells(title);
     buffer_puts(buffer, "\033[2;38;5;240;48;5;233m");
     buffer_puts(buffer, top ? "╭" : "╰");
@@ -831,16 +988,18 @@ static void append_footer(text_buffer *buffer, int columns,
                           const pp_tui_state *state) {
     char view[512];
     snprintf(view, sizeof(view),
-             " VIEW  center %+.1f %+.1f m  ·  zoom %.2fx  ·  yaw %+.0f°  ·  score ≥ %.2f  ·  layers %c %c %c %c %c",
+             " VIEW  %s  ·  center %+.1f %+.1f m  ·  zoom %.2fx  ·  yaw %+.0f°  ·  score ≥ %.2f  ·  %s  ·  layers %c %c %c %c %c",
+             state->perspective ? "3D" : "BEV",
              state->center_x, state->center_y, state->zoom,
              state->yaw * 57.2957795f, state->score_threshold,
+             state->animate_points ? "FLOW" : "STATIC",
              state->show_points ? 'P' : '-', state->show_boxes ? 'B' : '-',
              state->show_velocity ? 'V' : '-', state->show_grid ? 'G' : '-',
              state->show_tracks ? 'T' : '-');
     append_plain_line(buffer, "\033[38;5;246;48;5;233m", view, columns, 1);
     const char *controls = state->show_help ?
         " h / ? close help   ·   Space play / pause   ·   ← / → frames   ·   q quit" :
-        " Space play / pause   ·   ← / → frames   ·   WASD move   ·   [ / ] focus   ·   h / ? help   ·   q quit";
+        " Space pause  ·  ← / → frames  ·  WASD move  ·  m 3D/BEV  ·  f flow  ·  i inspector  ·  h help  ·  q quit";
     append_plain_line(buffer, "\033[38;5;252;48;5;233m", controls, columns, 0);
 }
 
@@ -892,7 +1051,7 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     append_header(&buffer, columns, frame, frame_count, inference_ms, backend,
                   state, count, visible, detections ? detections->count : 0);
 
-    int use_sidebar = columns >= 104 && rows >= 30;
+    int use_sidebar = state->show_sidebar && columns >= 104 && rows >= 30;
     int side_width = use_sidebar ? 30 : 0;
     int canvas_total = columns - (use_sidebar ? side_width + 1 : 0);
     int canvas_width = canvas_total - 2;
@@ -901,14 +1060,17 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     int pixel_height = canvas_height * 4;
     size_t pixel_count = (size_t)pixel_width * (size_t)pixel_height;
     unsigned char *pixels = (unsigned char *)calloc(pixel_count, 1);
-    if (!pixels) {
+    uint32_t *density = (uint32_t *)calloc(pixel_count, sizeof(*density));
+    if (!pixels || !density) {
+        free(density);
+        free(pixels);
         free(buffer.data);
         return 0;
     }
-    draw_scene(pixels, pixel_width, pixel_height, points, count, stride,
+    draw_scene(pixels, density, pixel_width, pixel_height, points, count, stride,
                detections, selected, state);
 
-    append_canvas_border(&buffer, canvas_width, 1);
+    append_canvas_border(&buffer, canvas_width, 1, state);
     if (use_sidebar) {
         buffer_putc(&buffer, ' ');
         append_side(&buffer, -1, side_width, counts, visible, selected,
@@ -917,7 +1079,8 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     finish_line(&buffer, 1);
     for (int row = 0; row < canvas_height; ++row) {
         buffer_puts(&buffer, "\033[2;38;5;240;48;5;233m│");
-        render_braille_row(&buffer, pixels, pixel_width, row, canvas_width);
+        render_braille_row(&buffer, pixels, density, pixel_width, row,
+                           canvas_width);
         buffer_puts(&buffer, "\033[2;38;5;240;48;5;233m│");
         if (use_sidebar) {
             buffer_putc(&buffer, ' ');
@@ -926,13 +1089,14 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
         }
         finish_line(&buffer, 1);
     }
-    append_canvas_border(&buffer, canvas_width, 0);
+    append_canvas_border(&buffer, canvas_width, 0, state);
     if (use_sidebar) {
         buffer_putc(&buffer, ' ');
         append_side(&buffer, canvas_height, side_width, counts, visible,
                     selected, detections, state);
     }
     finish_line(&buffer, 1);
+    free(density);
     free(pixels);
     append_footer(&buffer, columns, state);
     if (buffer.failed) {

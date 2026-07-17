@@ -2,7 +2,7 @@
 
 [![PointPillars live terminal viewer](docs/pointpillars-tui.png)](docs/pointpillars-tui.mp4)
 
-*Click the poster to watch native PointPillars inference over real nuScenes mini frames.*
+*Click the poster to watch native inference drive a flowing 3D terminal point cloud.*
 
 A small, auditable C11 runtime for the OpenPCDet nuScenes PointPillars
 MultiHead checkpoint. It turns ten lidar sweeps into 3D detections without
@@ -34,9 +34,11 @@ are checked against the original PyTorch checkpoint.
 - deterministic `.pth` → `.ppw` conversion and OpenPCDet-compatible ten-sweep
   nuScenes preparation;
 - single-frame, benchmark, batch, and interactive terminal modes;
-- reproducible JSON performance reports and official nuScenes evaluation;
-- a responsive ANSI/Braille BEV with filters, trails, selection, camera
-  controls, resize handling, and terminal recovery.
+- reproducible JSON performance reports, with official nuScenes evaluation as
+  an optional, separately installed workflow;
+- a responsive ANSI/Braille 3D point cloud and BEV where every in-view point
+  contributes through density-aware rendering, with sweep flow, height/age
+  shading, filters, trails, selection, camera controls, and terminal recovery.
 
 ## Quick start
 
@@ -67,9 +69,10 @@ frame=$(find /data/nuscenes/pointpillars_10sweep \
   nuscenes_multihead.ppw /data/nuscenes/pointpillars_10sweep
 ```
 
-Use `Space` to pause, arrows to step, `WASD` to pan, `+`/`-` to zoom,
-`z`/`e` to rotate, `[`/`]` to select, `0`–`9` to filter classes, and `q`
-to leave. The [TUI chapter](wiki/08-terminal-visualizer.md) has the full map.
+Use `m` to switch between perspective 3D and metric BEV, `f` to freeze sweep
+flow, `i` for the inspector, `Space` to pause, arrows to step, `WASD` to pan,
+and `z`/`e` to rotate. The [TUI chapter](wiki/08-terminal-visualizer.md) has the
+full interaction map.
 
 ## Honest numbers
 
@@ -83,9 +86,11 @@ frame on an 8-core Apple M2. Run zero is cold; the table reports 19 warm runs.
 
 GGML is not promoted on macOS because Accelerate already handles its candidate
 shapes first. On the full mini set, CPU batch produced 22,109 boxes across
-404/404 frames. Official `mini_val` evaluation reproduced mAP `0.2055` and NDS
-`0.3280`. The checked WSL/NVIDIA reference reaches 12.160 ms with strict cuDNN
-compact detection; fixtures and machines differ, so the numbers are not mixed.
+404/404 frames. The optional, isolated devkit workflow previously reproduced
+mini-val mAP `0.2055` and NDS `0.3280`; it is not required for build, inference,
+tests, or the TUI. The checked WSL/NVIDIA reference reaches 12.160 ms with
+strict cuDNN compact detection; fixtures and machines differ, so the numbers
+are not mixed.
 
 Reproduce the local report and oracle:
 

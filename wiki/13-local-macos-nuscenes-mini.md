@@ -148,16 +148,17 @@ inspector layout, selection, zoom, rotation, pause, filters, help, and trails.
 
 ```text
 120 × 40 terminal · 96 captured frames · 12 FPS · 8.0 seconds
-1200 × 720 H.264 · YUV420P · fast-start · 1.56 MiB
-MP4 SHA-256 ac08ecf6fe7aa8501a74e5581be58f9cdb5be2ffc6de45821dba7f812d2d7d2b
-poster SHA-256 870665d3aae03527cdb0d93464fd39e721f469b21e5ef252ec91376e6165f476
+1200 × 720 H.264 · YUV420P · fast-start · 1.78 MiB
+MP4 SHA-256 9be53684fffe05b7fd50fc755e950da375eaeb6728b7178ef1681df3bce4c4f7
+poster SHA-256 8557eb241776e86d355f8334bf7f75e4491c21165923047efdcf6e75c91d1b6f
 ```
 
-The selected poster shows frame 3/404 with 265,790 input points, 60,000 display
-points, 64 decoded objects, 15 visible at score 0.20, full-width perspective
-height, time/azimuth sweep flow, 3D boxes, and a measured 293.73 ms inference
-call. The scripted capture reports 25.0 real ANSI frames/s including first-load
-and interaction frames; H.264 remains encoded at 12 FPS for an 8-second demo.
+The selected poster shows frame 3/404 with all 265,790 points entering the
+renderer, 64 decoded objects, 15 visible at score 0.20, full-width perspective
+height, density-aware collisions, time/azimuth sweep flow, 3D boxes, and a
+measured 278.94 ms inference call. The scripted capture reports 28.4 real ANSI
+frames/s including first-load and interaction frames; H.264 remains encoded at
+12 FPS for an 8-second demo.
 
 ## Reproduce only what you need
 

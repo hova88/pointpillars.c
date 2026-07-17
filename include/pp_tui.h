@@ -18,7 +18,7 @@ typedef struct {
     int show_help, show_sidebar, animate_points, perspective, selected;
     unsigned animation_tick;
     pp_tui_track tracks[PP_TUI_MAX_TRACKS];
-    size_t track_count, last_frame, source_points;
+    size_t track_count, last_frame;
     int next_track_id, have_last_frame;
 } pp_tui_state;
 

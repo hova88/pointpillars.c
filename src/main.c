@@ -73,7 +73,7 @@ static void prep_pipe_end(prep_pipe*p){if(p->started){pthread_mutex_lock(&p->loc
 
 typedef struct {
     float *points;
-    size_t point_count, source_point_count;
+    size_t point_count;
     pp_box *boxes;
     size_t box_count;
     size_t frame;
@@ -98,46 +98,6 @@ typedef struct {
     unsigned long generation;
     tui_result *ready;
 } tui_pipe;
-
-static size_t tui_compact_points(float *points, size_t count) {
-    enum { DISPLAY_LIMIT = 60000 };
-    if (count <= DISPLAY_LIMIT) return count;
-    size_t available[3] = {0};
-    for (size_t index = 0; index < count; ++index) {
-        float lag = points[index * 5 + 4];
-        ++available[lag <= 0.15f ? 0 : lag <= 0.55f ? 1 : 2];
-    }
-    size_t quota[3] = {30000, 18000, 12000};
-    size_t selected = 0;
-    for (int band = 0; band < 3; ++band) {
-        if (quota[band] > available[band]) quota[band] = available[band];
-        selected += quota[band];
-    }
-    while (selected < DISPLAY_LIMIT) {
-        int added = 0;
-        for (int band = 0; band < 3 && selected < DISPLAY_LIMIT; ++band) {
-            if (quota[band] < available[band]) {
-                ++quota[band];
-                ++selected;
-                added = 1;
-            }
-        }
-        if (!added) break;
-    }
-    size_t accumulator[3] = {0};
-    size_t write_index = 0;
-    for (size_t read_index = 0; read_index < count; ++read_index) {
-        float *point = points + read_index * 5;
-        int band = point[4] <= 0.15f ? 0 : point[4] <= 0.55f ? 1 : 2;
-        accumulator[band] += quota[band];
-        if (accumulator[band] < available[band]) continue;
-        accumulator[band] -= available[band];
-        if (write_index != read_index)
-            memcpy(points + write_index * 5, point, 5 * sizeof(float));
-        ++write_index;
-    }
-    return write_index;
-}
 
 static void tui_result_free(tui_result *result) {
     if (!result) return;
@@ -212,8 +172,7 @@ static void *tui_prepare_frames(void *argument) {
             snprintf(result->error, sizeof(result->error),
                      "TUI preparation, inference, or decode failed");
         result->points = points;
-        result->source_point_count = point_count;
-        result->point_count = good ? tui_compact_points(points, point_count) : point_count;
+        result->point_count = point_count;
         result->box_count = good ? pipe->detections.count : 0;
         result->frame = frame;
         result->inference_ms = elapsed;
@@ -338,7 +297,7 @@ int main(int argc,char **argv){
        size_t fi=running?current->frame:0,requested=fi;
        const char *backend=tui_backend_name(use_cuda);
        if(!running){directory_ok=0;snprintf(error,sizeof error,"%s",current?current->error:"TUI worker stopped before the first frame");}
-       if(running){pp_detections view={current->boxes,current->box_count,current->box_count};ui.source_points=current->source_point_count;pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
+       if(running){pp_detections view={current->boxes,current->box_count,current->box_count};pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
        while(running){
         int action=pp_tui_poll(&ui,16);
         if(action==PP_TUI_QUIT)break;
@@ -349,7 +308,7 @@ int main(int argc,char **argv){
         tui_result *next=(!ui.paused||manual_pending)?tui_pipe_take(&pipe,0):NULL;
         if(!next)continue;
         if(!next->ok){snprintf(error,sizeof error,"%s",next->error);tui_result_free(next);directory_ok=0;break;}
-        tui_result_free(current);current=next;fi=current->frame;requested=fi;manual_pending=0;ui.source_points=current->source_point_count;
+        tui_result_free(current);current=next;fi=current->frame;requested=fi;manual_pending=0;
         view=(pp_detections){current->boxes,current->box_count,current->box_count};
         pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);
         if(!ui.paused){requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img">
   <title>Terminal visualizer compositing layers</title>
-  <desc>Range rings, age and height colored points, sweep flow, tracks, velocity, 3D boxes, selection, and ego are composed into Braille cells with bounded state.</desc>
+  <desc>All in-view points accumulate density while range rings, age and height colors, sweep flow, tracks, velocity, 3D boxes, selection, and ego are composed into Braille cells with bounded state.</desc>
   <defs>
     <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0L9 3 0 6Z" fill="#f59e0b"/></marker>
     <style>.t{fill:#e8edf2;font:21px system-ui}.m{fill:#a7b2c1;font:16px ui-monospace,monospace}.a{stroke:#f59e0b;stroke-width:4;fill:none;marker-end:url(#a)}</style>
@@ -38,5 +38,5 @@
     <text x="210" y="338" text-anchor="middle" class="t">one canonical pp_detections</text>
     <text x="210" y="370" text-anchor="middle" class="m">same boxes as JSON and evaluation</text>
   </g>
-  <text x="70" y="615" class="m">3D / BEV · 60k display LOD · async inference · continuous flow · signal-safe restore</text>
+  <text x="70" y="615" class="m">3D / BEV · all-point density · async inference · continuous flow · signal-safe restore</text>
 </svg>

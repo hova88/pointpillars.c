@@ -306,6 +306,15 @@ static void plot(unsigned char *pixels, int width, int height,
     if (pixels[index] < value) pixels[index] = value;
 }
 
+static void plot_point(unsigned char *pixels, uint32_t *density,
+                       int width, int height, int x, int y,
+                       unsigned char value) {
+    if ((unsigned)x >= (unsigned)width || (unsigned)y >= (unsigned)height) return;
+    size_t index = (size_t)y * (size_t)width + (size_t)x;
+    ++density[index];
+    if (pixels[index] < value) pixels[index] = value;
+}
+
 static int line_code(int x, int y, int width, int height) {
     return (x < 0 ? 1 : x >= width ? 2 : 0) |
            (y < 0 ? 4 : y >= height ? 8 : 0);
@@ -379,6 +388,8 @@ static void encode_braille(unsigned codepoint, char text[4]) {
 typedef struct {
     const pp_tui_state *state;
     float cosine, sine;
+    float scan_cosine, scan_sine;
+    float sweep;
 } projection;
 
 static void project3(float x, float y, float z, const projection *view,
@@ -602,32 +613,16 @@ static void draw_box(unsigned char *pixels, int width, int height,
     draw_line(pixels, width, height, center_x, center_y, nose_x, nose_y, ink);
 }
 
-static float angle_distance(float left, float right) {
-    const float pi = 3.14159265358979323846f;
-    float distance = fabsf(left - right);
-    return distance > pi ? 2.0f * pi - distance : distance;
-}
-
 static unsigned char point_ink(const float *point, size_t stride,
-                               const pp_tui_state *state, size_t index,
-                               int *visible) {
-    const float pi = 3.14159265358979323846f;
+                               const projection *view) {
     float intensity = stride >= 4 ? fmaxf(0.0f, fminf(1.0f, point[3])) : 1.0f;
     float lag = stride >= 5 ? fmaxf(0.0f, fminf(1.0f, point[4])) : 0.0f;
-
-    /* The worker already applies sweep-stratified display LOD. Thin only weak
-       current returns here so dense nearby surfaces do not become solid. */
-    uint32_t hash = (uint32_t)index * 2654435761u + 2246822519u;
-    if (lag <= 0.15f && intensity < 0.20f && (hash & 1u)) {
-        *visible = 0;
-        return 0;
-    }
-    *visible = 1;
-    float scan = fmodf((float)state->animation_tick * 0.22f, 2.0f * pi) - pi;
-    float direction = atan2f(point[1], point[0]);
-    float sweep = fmodf((float)state->animation_tick * 0.045f, 1.0f);
-    int flow = state->animate_points &&
-        (angle_distance(direction, scan) < 0.10f || fabsf(lag - sweep) < 0.035f);
+    float along = point[0] * view->scan_cosine + point[1] * view->scan_sine;
+    float across = point[0] * view->scan_sine - point[1] * view->scan_cosine;
+    int in_scan_wedge = along > 0.0f &&
+        across * across < 0.010067f * along * along;
+    int flow = view->state->animate_points &&
+        (in_scan_wedge || fabsf(lag - view->sweep) < 0.035f);
     if (flow) return PIX_POINT_FLOW;
     if (lag > 0.55f) return PIX_POINT_OLD;
     if (lag > 0.15f || intensity < 0.08f) return PIX_POINT_MID;
@@ -635,25 +630,26 @@ static unsigned char point_ink(const float *point, size_t stride,
            point[2] < 0.75f ? PIX_POINT_LOW : PIX_POINT_HIGH;
 }
 
-static void draw_scene(unsigned char *pixels, int width, int height,
+static void draw_scene(unsigned char *pixels, uint32_t *density,
+                       int width, int height,
                        const float *points, size_t count, size_t stride,
                        const pp_detections *detections, int selected,
                        const pp_tui_state *state) {
     float animated_yaw = state->perspective && state->animate_points ?
         0.045f * sinf((float)state->animation_tick * 0.055f) : 0.0f;
+    float scan = (float)state->animation_tick * 0.22f;
     projection view = {state, cosf(state->yaw + animated_yaw),
-                       sinf(state->yaw + animated_yaw)};
+                       sinf(state->yaw + animated_yaw), cosf(scan), sinf(scan),
+                       fmodf((float)state->animation_tick * 0.045f, 1.0f)};
     if (state->show_grid) draw_grid(pixels, width, height, &view);
     if (state->show_points) {
         for (size_t index = 0; index < count; ++index) {
             const float *point = points + index * stride;
-            int visible;
-            unsigned char ink = point_ink(point, stride, state, index, &visible);
-            if (!visible) continue;
+            unsigned char ink = point_ink(point, stride, &view);
             int x;
             int y;
             project3(point[0], point[1], point[2], &view, width, height, &x, &y);
-            plot(pixels, width, height, x, y, ink);
+            plot_point(pixels, density, width, height, x, y, ink);
         }
     }
     if (state->show_tracks) {
@@ -704,7 +700,7 @@ static void draw_scene(unsigned char *pixels, int width, int height,
     draw_ego(pixels, width, height, &view);
 }
 
-static void set_pixel_style(text_buffer *buffer, int kind) {
+static void set_pixel_style(text_buffer *buffer, int kind, int density_grade) {
     int color = 250;
     int mode = 0;
     if (kind == 0) {
@@ -749,29 +745,40 @@ static void set_pixel_style(text_buffer *buffer, int kind) {
         color = 214;
         mode = 1;
     }
+    if (kind >= PIX_POINT_OLD && kind <= PIX_POINT_FLOW) {
+        mode = density_grade <= 1 ? 2 : density_grade == 2 ? 0 : 1;
+        if (kind == PIX_POINT_FLOW && mode < 1) mode = 1;
+    }
     buffer_printf(buffer, "\033[%d;38;5;%d;48;5;233m", mode, color);
 }
 
 static void render_braille_row(text_buffer *buffer, const unsigned char *pixels,
+                                const uint32_t *density,
                                 int pixel_width, int character_row,
                                 int character_width) {
     static const int dot[4][2] = {{1, 8}, {2, 16}, {4, 32}, {64, 128}};
-    int previous_kind = -1;
+    int previous_style = -1;
     for (int column = 0; column < character_width; ++column) {
         int mask = 0;
         int kind = 0;
+        size_t density_total = 0;
         for (int y = 0; y < 4; ++y) {
             for (int x = 0; x < 2; ++x) {
-                unsigned char value = pixels[
+                size_t index =
                     (size_t)(character_row * 4 + y) * (size_t)pixel_width +
-                    (size_t)(column * 2 + x)];
+                    (size_t)(column * 2 + x);
+                unsigned char value = pixels[index];
                 if (value) mask |= dot[y][x];
                 if (value > kind) kind = value;
+                density_total += density[index];
             }
         }
-        if (kind != previous_kind) {
-            set_pixel_style(buffer, kind);
-            previous_kind = kind;
+        int grade = density_total <= 2 ? 1 : density_total <= 8 ? 2 : 3;
+        if (kind < PIX_POINT_OLD || kind > PIX_POINT_FLOW) grade = 0;
+        int style = kind * 4 + grade;
+        if (style != previous_style) {
+            set_pixel_style(buffer, kind, grade);
+            previous_style = style;
         }
         if (mask) {
             char encoded[4];
@@ -831,13 +838,8 @@ static void append_header(text_buffer *buffer, int columns, size_t frame,
     char object_text[96];
     snprintf(frame_text, sizeof(frame_text), " FRAME %03zu / %03zu  ",
              frame + 1, frame_count);
-    if (state->source_points && state->source_points != points)
-        snprintf(object_text, sizeof(object_text),
-                 "  %zu POINTS · %zu DRAW   %zu / %zu OBJECTS ",
-                 state->source_points, points, visible, decoded);
-    else
-        snprintf(object_text, sizeof(object_text), "  %zu POINTS   %zu / %zu OBJECTS ",
-                 points, visible, decoded);
+    snprintf(object_text, sizeof(object_text), "  %zu POINTS   %zu / %zu OBJECTS ",
+             points, visible, decoded);
     int available = columns - text_cells(frame_text) - text_cells(object_text);
     int bar_width = available > 36 ? 36 : available;
     if (bar_width < 4) bar_width = 4;
@@ -1058,11 +1060,14 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     int pixel_height = canvas_height * 4;
     size_t pixel_count = (size_t)pixel_width * (size_t)pixel_height;
     unsigned char *pixels = (unsigned char *)calloc(pixel_count, 1);
-    if (!pixels) {
+    uint32_t *density = (uint32_t *)calloc(pixel_count, sizeof(*density));
+    if (!pixels || !density) {
+        free(density);
+        free(pixels);
         free(buffer.data);
         return 0;
     }
-    draw_scene(pixels, pixel_width, pixel_height, points, count, stride,
+    draw_scene(pixels, density, pixel_width, pixel_height, points, count, stride,
                detections, selected, state);
 
     append_canvas_border(&buffer, canvas_width, 1, state);
@@ -1074,7 +1079,8 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     finish_line(&buffer, 1);
     for (int row = 0; row < canvas_height; ++row) {
         buffer_puts(&buffer, "\033[2;38;5;240;48;5;233m│");
-        render_braille_row(&buffer, pixels, pixel_width, row, canvas_width);
+        render_braille_row(&buffer, pixels, density, pixel_width, row,
+                           canvas_width);
         buffer_puts(&buffer, "\033[2;38;5;240;48;5;233m│");
         if (use_sidebar) {
             buffer_putc(&buffer, ' ');
@@ -1090,6 +1096,7 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
                     selected, detections, state);
     }
     finish_line(&buffer, 1);
+    free(density);
     free(pixels);
     append_footer(&buffer, columns, state);
     if (buffer.failed) {

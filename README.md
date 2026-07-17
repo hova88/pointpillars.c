@@ -34,8 +34,10 @@ are checked against the original PyTorch checkpoint.
 - deterministic `.pth` → `.ppw` conversion and OpenPCDet-compatible ten-sweep
   nuScenes preparation;
 - single-frame, benchmark, batch, and interactive terminal modes;
-- reproducible JSON performance reports and official nuScenes evaluation;
-- a responsive ANSI/Braille 3D point cloud and BEV with sweep flow, height/age
+- reproducible JSON performance reports, with official nuScenes evaluation as
+  an optional, separately installed workflow;
+- a responsive ANSI/Braille 3D point cloud and BEV where every in-view point
+  contributes through density-aware rendering, with sweep flow, height/age
   shading, filters, trails, selection, camera controls, and terminal recovery.
 
 ## Quick start
@@ -84,9 +86,11 @@ frame on an 8-core Apple M2. Run zero is cold; the table reports 19 warm runs.
 
 GGML is not promoted on macOS because Accelerate already handles its candidate
 shapes first. On the full mini set, CPU batch produced 22,109 boxes across
-404/404 frames. Official `mini_val` evaluation reproduced mAP `0.2055` and NDS
-`0.3280`. The checked WSL/NVIDIA reference reaches 12.160 ms with strict cuDNN
-compact detection; fixtures and machines differ, so the numbers are not mixed.
+404/404 frames. The optional, isolated devkit workflow previously reproduced
+mini-val mAP `0.2055` and NDS `0.3280`; it is not required for build, inference,
+tests, or the TUI. The checked WSL/NVIDIA reference reaches 12.160 ms with
+strict cuDNN compact detection; fixtures and machines differ, so the numbers
+are not mixed.
 
 Reproduce the local report and oracle:
 

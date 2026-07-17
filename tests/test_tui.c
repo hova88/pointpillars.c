@@ -208,6 +208,22 @@ int main(void) {
     pp_tui_frame_free(&depth_a);
     pp_tui_frame_free(&depth_b);
     state.perspective = 1;
+
+    state.show_grid = 0;
+    float dense_points[16 * 5];
+    for (size_t index = 0; index < 16; ++index)
+        memcpy(dense_points + index * 5, height_b, 5 * sizeof(float));
+    pp_tui_frame sparse_density = {0};
+    pp_tui_frame high_density = {0};
+    if (!pp_tui_compose(height_b, 1, 5, NULL, 0, 1, 1.0, "CPU",
+                        &state, 80, 24, &sparse_density) ||
+        !pp_tui_compose(dense_points, 16, 5, NULL, 0, 1, 1.0, "CPU",
+                        &state, 80, 24, &high_density)) return 24;
+    if (!strstr(sparse_density.data, "\033[2;38;5;118;48;5;233m") ||
+        !strstr(high_density.data, "\033[1;38;5;118;48;5;233m")) return 25;
+    pp_tui_frame_free(&sparse_density);
+    pp_tui_frame_free(&high_density);
+    state.show_grid = 1;
     state.animate_points = 1;
 
     state.show_sidebar = 1;

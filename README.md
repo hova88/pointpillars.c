@@ -122,24 +122,45 @@ driver diagnosis.
 
 ## Live terminal point cloud
 
+[![PointPillars live BEV terminal viewer](docs/pointpillars-tui.png)](docs/pointpillars-tui.mp4)
+
+*Real cuDNN inference over prepared nuScenes sweeps. Click the terminal preview to play the 8-second MP4.*
+
 ```sh
 ./build/pointpillars_cuda tui-cuda \
   nuscenes_multihead.ppw /data/nuscenes/pointpillars_10sweep
 ```
 
-Each terminal character carries a 2×4 Braille pixel block. Rotated boxes are overlaid in ANSI color. No curses or graphical window is required.
+Each terminal character carries a 2×4 Braille pixel block. The responsive live
+BEV combines aspect-correct metric projection, 10 m range rings, height-colored
+points, oriented boxes, velocity, bounded trails, a frame progress bar, class
+counts, and a selected-object inspector. Wide terminals show the scene panel;
+compact terminals devote the full width to the point cloud. No curses or
+graphical window is required.
 The viewer runs in an alternate screen and restores the terminal on exit. Press
 `Space` to pause, arrows or `p`/`n` to step frames, `WASD` to pan, `z`/`e` to
 rotate, `+`/`-` to zoom, `0`–`9` to toggle nuScenes classes, `,`/`.` to adjust
 the score threshold, `[`/`]` to inspect detections, `b`/`v` to toggle box and
-velocity layers, `r` to reset the view, and `q` to quit. Detection classes use
+velocity layers, `l`/`g`/`t` to toggle points, range rings, and trails,
+`h` or `?` for the in-view help panel, `r` to reset the view, and `q` to quit.
+Detection classes use
 stable colors and the selected target shows pose, dimensions, yaw, velocity,
-and confidence in a status panel. `g` toggles the 10 m metric grid and `t`
+and confidence in a status panel. The display starts at score `0.20` for a
+clean scene and can be lowered to the runtime decode floor of `0.10`. `g`
+toggles the 10 m range rings and `t`
 toggles bounded cross-frame trails. Trails use same-class nearest-neighbor
 association and reset automatically after reverse navigation or a frame jump.
 The selected-object panel reports its bounded local track ID and history age.
 Paused views redraw on terminal resize; interrupt, quit, suspend, and hangup
 signals all leave through the terminal-restoration path.
+
+The checked-in video is reproducible from the same executable and dataset. The
+recorder opens a fixed 120×40 PTY, drives real TUI interactions, parses the
+program's ANSI output, and encodes the frames with Pillow and `ffmpeg`:
+
+```sh
+make tui-video TUI_DATA=/data/nuscenes/pointpillars_10sweep
+```
 
 ## Official nuScenes evaluation
 

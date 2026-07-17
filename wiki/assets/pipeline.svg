@@ -21,7 +21,7 @@
     <rect x="880" width="220" height="120" class="b" stroke="#ef4444"/><text x="990" y="43" text-anchor="middle" class="t">6 × 6 branches</text><text x="990" y="75" text-anchor="middle" class="m">236×128×128</text><text x="990" y="99" text-anchor="middle" class="m">14.75 MiB raw</text>
   </g>
   <path d="M1035 285 V355 H820" class="arrow"/>
-  <rect x="655" y="355" width="330" height="105" class="b" stroke="#f59e0b"/><text x="820" y="397" text-anchor="middle" class="t">GPU candidate compaction</text><text x="820" y="430" text-anchor="middle" class="m">15,104 KiB → ≈10.5 KiB D2H</text>
+  <rect x="655" y="355" width="330" height="105" class="b" stroke="#f59e0b"/><text x="820" y="397" text-anchor="middle" class="t">GPU candidate compaction</text><text x="820" y="430" text-anchor="middle" class="m">15,104 KiB → ≈10–20 KiB D2H</text>
   <path d="M655 408 H560" class="arrow"/>
   <rect x="285" y="355" width="275" height="105" class="b" stroke="#a855f7"/><text x="422" y="397" text-anchor="middle" class="t">Decode + rotated NMS</text><text x="422" y="430" text-anchor="middle" class="m">canonical pp_box</text>
   <path d="M422 460 V520" class="arrow"/>

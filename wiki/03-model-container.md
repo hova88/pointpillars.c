@@ -39,7 +39,7 @@ The loader closes the file descriptor immediately after `mmap`. The mapping, not
 
 `pp_model_tensor` linearly scans 190 records, compares names, validates rank and dimensions, then returns a pointer into the mapped data. Linear search would be a poor design for a graph with tens of thousands of tensors. Here, the graph is fixed and lookup occurs once per layer launch, while each convolution performs millions or billions of MACs.
 
-On CUDA, the analogous helper resolves the device pointer by adding the record's byte offset to the device weight base. The runtime also creates a half-precision mirror preserving `offset / sizeof(float)`, so a tensor name resolves to the same logical record in either representation.
+On custom CUDA, the analogous helper resolves the device pointer by adding the record's byte offset to the device weight base. That build also creates a half-precision mirror preserving `offset / sizeof(float)`, so a tensor name resolves to the same logical record in either representation. The cuDNN build consumes the FP32 device copy directly and omits the mirror. The GGML hybrid points tensors directly into the CPU mapping; it does not create a second weight store.
 
 If tensor lookup ever appears in a profile, the next step is not a general graph engine. It is an exporter-emitted enum or prebound table for these 190 known names.
 
@@ -61,11 +61,12 @@ Weights are made contiguous little-endian fp32 before writing. That matters for 
 
 | Backend | fp32 weights | fp16 weights | Per-frame weight traffic across host/device |
 |---|---:|---:|---:|
-| CPU | 23.19 MiB mapped | none | none |
-| CUDA precise | 23.19 MiB device | mirror allocated but unused by direct conv | none after initialization |
-| CUDA fast | 23.19 MiB device | 11.59 MiB device | none after initialization |
+| CPU / GGML hybrid | 23.19 MiB mapped | none | none |
+| custom CUDA precise | 23.19 MiB device | 11.59 MiB allocated but unused by direct conv | none after initialization |
+| custom CUDA fast | 23.19 MiB device | 11.59 MiB device | none after initialization |
+| cuDNN FMA | 23.19 MiB device | none | none after initialization |
 
-The first CUDA call is intentionally expensive: it allocates the context, uploads all weights, converts the data region to FP16, and faults workspaces into residency. Warm benchmarks exclude that call but report it separately.
+The first custom CUDA call allocates the context, uploads weights, converts the data region to FP16, and faults workspaces into residency. The first cuDNN call uploads only FP32 weights but also creates descriptors, selects bounded algorithms, grows a shared workspace, and loads library kernels. Warm benchmarks exclude that call from the distribution but report it separately.
 
 ## Tests and failure modes
 

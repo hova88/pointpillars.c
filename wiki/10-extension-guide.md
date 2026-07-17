@@ -9,7 +9,7 @@
 3. Bump the container version if record or data semantics change.
 4. Add representative shape assertions to [`tests/test_model.c`](../tests/test_model.c).
 5. Update the PyTorch oracle before changing optimized kernels.
-6. Make CPU raw output pass; then precise CUDA; then fast CUDA.
+6. Make CPU raw output pass; then custom precise CUDA and cuDNN FMA; only then evaluate approximate CUDA math.
 7. Revalidate decode and the correct dataset split.
 
 Do not teach the runtime to parse an arbitrary training graph unless generality is an explicit product requirement. A second specialized forward function is often easier to audit than a half-built graph VM.
@@ -45,6 +45,8 @@ Before coding, calculate:
 - additional persistent and peak VRAM.
 
 Add an environment switch for A/B until the full graph proves a win. Preserve `PP_CUDA_PRECISE=1` as the graph-equivalence route. A fast kernel that only works on the largest backbone shape is not a replacement for the small heads.
+
+For a cuDNN operator, cache descriptors and algorithms by the shape properties that determine execution, not by tensor name. Account for plan-creation cold time, selected workspace, determinism, math mode, and transposed-convolution layout. `PP_CUDNN_DISABLE=1` must keep the custom backend usable in the same binary. Reduced-precision modes require their own oracle and task evaluation.
 
 ## Change voxel features
 
@@ -88,8 +90,12 @@ Preserve frame order and propagate errors across threads. Throughput improvement
 ```sh
 make test             # normal CPU fixtures
 make portable-test    # no OpenMP
-make cuda             # optional accelerator
+make ggml             # pinned optional CPU hybrid
+make cuda             # custom optional accelerator
+make cudnn             # optional strict FP32/FMA accelerator
+make cudnn-test        # scalar cuDNN operator fixtures
 make checkpoint-oracle
+make checkpoint-oracle-cudnn
 make evaluate
 ```
 
@@ -103,6 +109,9 @@ python3 skills/siboehm-blog/scripts/check_wiki.py wiki --repository-root .
 
 - [CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/)
 - [CUDA WMMA API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#wmma)
+- [NVIDIA cuDNN](https://docs.nvidia.com/deeplearning/cudnn/latest/index.html)
+- [GGML](https://github.com/ggml-org/ggml)
+- [GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 - [CUTLASS efficient GEMM documentation](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/efficient_gemm.md)
 - [OpenMP specification](https://www.openmp.org/specifications/)
 - [nuScenes detection task](https://www.nuscenes.org/object-detection/)

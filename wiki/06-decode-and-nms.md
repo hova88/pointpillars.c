@@ -1,6 +1,6 @@
 # Decode, Compact Transfer, and Rotated NMS
 
-> **Outcome.** Postprocessing converts 236 raw feature planes into at most 830 canonical boxes. CPU decode fell from roughly 2.6 ms to about 0.36 ms by comparing logits before sigmoid and prebinding branch planes. CUDA batch/TUI avoid transferring the 14.75 MiB raw output: they return about 10.5 KiB of original candidate codes and run the same C geometry and NMS.
+> **Outcome.** Postprocessing converts 236 raw feature planes into at most 830 canonical boxes. CPU decode fell from roughly 2.6 ms to about 0.36 ms by comparing logits before sigmoid and prebinding branch planes. CUDA batch/TUI avoid transferring the 14.75 MiB raw output: they return roughly 10–20 KiB of original candidate codes on measured frames and run the same C geometry and NMS.
 
 ## Score filtering before transcendental work
 
@@ -59,9 +59,9 @@ For batch and TUI, [`compact_candidates`](../src/infer_cuda.cu) runs one class-s
 
 The GPU does **not** decode box geometry. The CPU receives original fp32 values and calls `pp_decode_compact`, which performs the same arithmetic and `append_nms` as full-raw decode. That boundary was chosen for validation, not merely convenience.
 
-Worst-case capacity is exact: a class can have at most four anchors × 128×128 positions = 65,536 candidates. Ten fixed segments therefore reserve 32.5 MiB on device, allocated lazily. Actual D2H on 81 checked mini frames averaged 10.54 KiB and peaked at 19.1 KiB, versus 15,104 KiB for every full raw frame.
+Worst-case capacity is exact: a class can have at most four anchors × 128×128 positions = 65,536 candidates. Ten fixed segments therefore reserve 32.5 MiB on device, allocated lazily. Actual D2H on 81 checked mini frames averaged 10.54 KiB and peaked at 19.1 KiB; the current perf frame transfers about 20 KiB. Full raw is always 15,104 KiB.
 
-`PP_CUDA_RAW_DECODE=1` disables compaction. All JSON files from compact and full-raw paths were byte-identical across those 81 frames.
+`PP_CUDA_RAW_DECODE=1` disables compaction. All custom-CUDA JSON files from compact and full-raw paths were byte-identical across those 81 frames; cuDNN FMA compact/full JSON is also byte-identical on the controlled perf frame.
 
 > **Sidenote — atomic order.** Candidates are sorted by score before NMS, so reservation order does not define semantic output. Exact byte identity on the validation set is still checked rather than assumed.
 

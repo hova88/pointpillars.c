@@ -30,7 +30,11 @@ static int write_detections(const char *path,const pp_detections*d){
 }
 
 static void usage(const char *p) {
-    fprintf(stderr,"usage: %s inspect MODEL.ppw\n       %s infer MODEL.ppw POINTS.bin [OUTPUT.ppout] [stride=5]\n",p,p);
+    fprintf(stderr,
+            "usage: %s MODE MODEL.ppw INPUT [OUTPUT] [options]\n"
+            "modes: inspect, infer, infer-cuda, bench, bench-cuda, "
+            "bench-detect-cuda, batch, batch-cuda, tui, tui-cuda\n",
+            p);
 }
 static int compare_names(const void*a,const void*b){return strcmp(*(char*const*)a,*(char*const*)b);}
 static double monotonic_ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1e3+t.tv_nsec/1e6;}
@@ -58,8 +62,9 @@ int main(int argc,char **argv){
     }
     int is_tui=!strcmp(argv[1],"tui")||!strcmp(argv[1],"tui-cuda");
     int is_batch=!strcmp(argv[1],"batch")||!strcmp(argv[1],"batch-cuda");
-    int is_bench=!strcmp(argv[1],"bench")||!strcmp(argv[1],"bench-cuda");
-    int use_cuda=!strcmp(argv[1],"infer-cuda")||!strcmp(argv[1],"tui-cuda")||!strcmp(argv[1],"bench-cuda")||!strcmp(argv[1],"batch-cuda");
+    int compact_bench=!strcmp(argv[1],"bench-detect-cuda");
+    int is_bench=!strcmp(argv[1],"bench")||!strcmp(argv[1],"bench-cuda")||compact_bench;
+    int use_cuda=!strcmp(argv[1],"infer-cuda")||!strcmp(argv[1],"tui-cuda")||!strcmp(argv[1],"bench-cuda")||compact_bench||!strcmp(argv[1],"batch-cuda");
     int compact_cuda=use_cuda&&!getenv("PP_CUDA_RAW_DECODE");
     if((strcmp(argv[1],"infer")&&!use_cuda&&!is_tui&&!is_bench&&!is_batch)||argc<4||(is_batch&&argc<5)){usage(argv[0]);pp_model_close(&m);return 2;}
 #ifndef PP_WITH_CUDA
@@ -113,8 +118,9 @@ int main(int argc,char **argv){
     }
     size_t stride=argc>5?(size_t)strtoul(argv[5],NULL,10):5,count=0;float *points=NULL;
     if(!pp_load_points(argv[3],stride,&points,&count,error,sizeof error)){fprintf(stderr,"error: %s\n",error);pp_model_close(&m);return 1;}
-    pp_pillars p;pp_voxel_stats vs;pp_raw_output out;pp_profile pr;pp_detections det;
-    if(!pp_pillars_alloc(&p)||!pp_output_alloc(&out)||!pp_voxelize(points,count,stride,&p,&vs)){
+    pp_pillars p;pp_voxel_stats vs;pp_raw_output out={0};pp_profile pr;pp_detections det={0};
+    if(!pp_pillars_alloc(&p)||(!compact_bench&&!pp_output_alloc(&out))||!pp_voxelize(points,count,stride,&p,&vs)||
+       (compact_bench&&!pp_detections_alloc(&det,1000))){
       fprintf(stderr,"error: allocation/voxelization failed\n");free(points);pp_model_close(&m);return 1;}
     fprintf(stderr,"points=%zu accepted=%llu pillars=%d clipped=%llu dropped=%llu\n",count,
       (unsigned long long)vs.accepted_points,p.pillar_count,(unsigned long long)vs.clipped_points,(unsigned long long)vs.dropped_pillars);
@@ -122,14 +128,15 @@ int main(int argc,char **argv){
     if(is_bench){int reps=argc>4?atoi(argv[4]):5;if(reps<1)reps=1;double sum=0;
       for(int k=0;k<reps;k++){
 #ifdef PP_WITH_CUDA
-        ok=use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);
+        ok=compact_bench?pp_infer_cuda_detect(&m,&p,&det,.1f,.2f,&pr,error,sizeof error):
+           (use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error));
 #else
         ok=pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);
 #endif
-        if(!ok){fprintf(stderr,"error: %s\n",error);break;}fprintf(stderr,"run %d total %.2f ms (pfn %.2f, backbone %.2f, heads %.2f)\n",k,pr.total_ms,pr.pfn_ms,pr.backbone_ms,pr.heads_ms);if(k)sum+=pr.total_ms;
+        if(!ok){fprintf(stderr,"error: %s\n",error);break;}fprintf(stderr,"run %d total %.3f ms (pfn %.3f, scatter %.3f, backbone %.3f, heads %.3f, workspace %zu, d2h %zu)\n",k,pr.total_ms,pr.pfn_ms,pr.scatter_ms,pr.backbone_ms,pr.heads_ms,pr.workspace_bytes,pr.device_to_host_bytes);if(k)sum+=pr.total_ms;
       }
       if(ok&&reps>1)fprintf(stderr,"warm mean %.2f ms over %d runs\n",sum/(reps-1),reps-1);
-      pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
+      pp_detections_free(&det);pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
     }
 #ifdef PP_WITH_CUDA
     ok=use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);

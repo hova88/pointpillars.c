@@ -35,6 +35,13 @@ endif
 MODEL ?= nuscenes_multihead.ppw
 CHECKPOINT ?= ckpts/pp_multihead_nds5823_updated.pth
 CONFIG ?= cfgs/pointpillars.yaml
+NUSCENES_ROOT ?= /data/nuscenes
+PREPARED_DATA ?= $(NUSCENES_ROOT)/pointpillars_10sweep
+EVAL_PYTHON ?= $(PYTHON)
+EVAL_SPLIT ?= mini_val
+DETECTIONS_DIR ?= build/nuscenes-detections
+SUBMISSION ?= build/nuscenes-submission.json
+EVAL_OUTPUT ?= build/nuscenes-evaluation
 NVCC ?= /usr/local/cuda-12.4/bin/nvcc
 CUDA_ARCH ?= sm_89
 GGML_VERSION ?= v0.16.0
@@ -44,10 +51,10 @@ HASH_CMD := $(if $(shell command -v sha256sum 2>/dev/null),sha256sum,shasum -a 2
 GGML_SOURCE_ID := $(shell printf '%s\n' '$(abspath $(GGML_SOURCE))' | $(HASH_CMD) | cut -c1-12)
 GGML_BUILD_DIR ?= build/ggml-build/$(GGML_SOURCE_ID)
 GGML_INSTALL ?= build/ggml-install
-PERF_FRAME ?= $(shell find /data/nuscenes/pointpillars_10sweep -name '*.bin' -type f 2>/dev/null | sort | head -1)
+PERF_FRAME ?= $(shell find $(PREPARED_DATA) -name '*.bin' -type f 2>/dev/null | sort | head -1)
 PERF_REPS ?= 10
 PERF_THREADS ?= 16
-TUI_DATA ?= /data/nuscenes/pointpillars_10sweep
+TUI_DATA ?= $(PREPARED_DATA)
 CPU_CONFIG_ID := $(shell printf '%s\n' '$(CC)|$(CPPFLAGS)|$(CFLAGS)|$(LDLIBS)|OMP=$(OMP)' | $(HASH_CMD) | cut -c1-12)
 CUDA_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)' | $(HASH_CMD) | cut -c1-12)
 CUDNN_CONFIG_ID := $(shell printf '%s\n' '$(NVCC)|$(CPPFLAGS)|$(CFLAGS)|$(CUDA_ARCH)|OMP=$(OMP)|cuDNN' | $(HASH_CMD) | cut -c1-12)
@@ -60,7 +67,7 @@ CUDNN_OBJDIR := build/cudnn/$(CUDNN_CONFIG_ID)
 GGML_BINARY := build/pointpillars_ggml.$(GGML_CONFIG_ID)
 GGML_STAMP := $(GGML_INSTALL)/.pointpillars-$(GGML_COMMIT)
 
-.PHONY: all model setup-model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml tui-video prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate clean FORCE
+.PHONY: all model setup-model cuda cudnn cudnn-test ggml test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact perf-ggml tui-video prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn checkpoint-oracle-ggml evaluate evaluate-cpu evaluate-cuda clean FORCE
 all: build/pointpillars
 cuda: build/pointpillars_cuda
 cudnn: build/pointpillars_cudnn
@@ -205,7 +212,7 @@ tui-video: $(TUI_TARGET)
 	$(PYTHON) tools/record_tui.py $(TUI_BINARY) $(MODEL) $(TUI_DATA) docs/pointpillars-tui.mp4 --poster docs/pointpillars-tui.png --mode $(TUI_MODE)
 
 prepare-data:
-	$(PYTHON) tools/prepare_nuscenes.py --root /data/nuscenes --output /data/nuscenes/pointpillars_10sweep
+	$(PYTHON) tools/prepare_nuscenes.py --root $(NUSCENES_ROOT) --output $(PREPARED_DATA)
 
 checkpoint-oracle: test
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
@@ -227,12 +234,19 @@ checkpoint-oracle-ggml: test build/pointpillars_ggml
 	OMP_NUM_THREADS=16 ./build/pointpillars_ggml infer $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_ggml.ppout 5
 	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_ggml.ppout
 
-evaluate: cuda
-	rm -rf build/nuscenes-detections
-	./build/pointpillars_cuda batch-cuda $(MODEL) /data/nuscenes/pointpillars_10sweep build/nuscenes-detections
-	mkdir -p evaluation
-	$(PYTHON) tools/make_submission.py build/nuscenes-detections /data/nuscenes/pointpillars_10sweep/manifest.json evaluation/nuscenes_submission.json
-	$(PYTHON) tools/evaluate_nuscenes.py evaluation/nuscenes_submission.json --output evaluation/nuscenes-mini
+evaluate: evaluate-cpu
+
+evaluate-cpu: build/pointpillars
+	mkdir -p $(DETECTIONS_DIR) $(dir $(SUBMISSION)) $(EVAL_OUTPUT)
+	./build/pointpillars batch $(MODEL) $(PREPARED_DATA) $(DETECTIONS_DIR)
+	$(EVAL_PYTHON) tools/make_submission.py $(DETECTIONS_DIR) $(PREPARED_DATA)/manifest.json $(SUBMISSION) --root $(NUSCENES_ROOT) --split $(EVAL_SPLIT)
+	$(EVAL_PYTHON) tools/evaluate_nuscenes.py $(SUBMISSION) --root $(NUSCENES_ROOT) --output $(EVAL_OUTPUT)
+
+evaluate-cuda: build/pointpillars_cudnn
+	mkdir -p $(DETECTIONS_DIR) $(dir $(SUBMISSION)) $(EVAL_OUTPUT)
+	./build/pointpillars_cudnn batch-cuda $(MODEL) $(PREPARED_DATA) $(DETECTIONS_DIR)
+	$(EVAL_PYTHON) tools/make_submission.py $(DETECTIONS_DIR) $(PREPARED_DATA)/manifest.json $(SUBMISSION) --root $(NUSCENES_ROOT) --split $(EVAL_SPLIT)
+	$(EVAL_PYTHON) tools/evaluate_nuscenes.py $(SUBMISSION) --root $(NUSCENES_ROOT) --output $(EVAL_OUTPUT)
 
 clean:
 	rm -rf build

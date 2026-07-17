@@ -97,10 +97,13 @@ make tui-video PYTHON=.venv/bin/python \
   TUI_DATA=/data/nuscenes/pointpillars_10sweep
 ```
 
-The checked macOS artifact is 1200×720, 12 FPS, 8 seconds,
-YUV420P/H.264, and about 1 MiB. Its poster and MP4 live under `docs/` because
-they are README-facing documentation artifacts; transient recording state
-never enters the repository.
+The checked macOS artifact comes from the native Accelerate backend over the
+real 404-frame nuScenes mini preparation. It is 1200×720, 12 FPS, 8 seconds,
+YUV420P/H.264, and 2.68 MiB. The selected poster is frame 36/404 with 267,752
+input points and live selection/trail state. Its poster and MP4 live under
+`docs/` because they are README-facing documentation artifacts; transient
+recording state never enters the repository. Exact hashes and the complete
+local audit are in [the macOS + nuScenes mini chapter](13-local-macos-nuscenes-mini.md).
 
 ## What to remember
 

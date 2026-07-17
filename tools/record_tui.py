@@ -193,8 +193,25 @@ def draw_screen(screen: list[list[Cell]], regular: ImageFont.FreeTypeFont,
     return image
 
 
+def drain_until_exit(process: subprocess.Popen, master: int,
+                     timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return True
+        readable, _, _ = select.select([master], [], [], 0.05)
+        if readable:
+            try:
+                if not os.read(master, 1 << 20):
+                    break
+            except (BlockingIOError, OSError):
+                pass
+    return process.poll() is not None
+
+
 def capture_frames(command: list[str], columns: int, rows: int,
-                   frame_count: int, timeout: float) -> list[bytes]:
+                   frame_count: int, timeout: float) -> tuple[list[bytes], float]:
+    capture_begin = time.monotonic()
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios_tiocswinsz(), struct.pack("HHHH", rows, columns, 0, 0))
     environment = os.environ.copy()
@@ -210,8 +227,10 @@ def capture_frames(command: list[str], columns: int, rows: int,
         10: b"]", 20: b"+", 30: b"e", 38: b"e",
         48: b" ", 49: b"h", 50: b"]", 51: b"]", 52: b".",
         53: b".", 54: b"l", 55: b"l", 56: b"h", 57: b"+",
-        58: b"e", 59: b" ", 72: b"t", 80: b"t",
+        58: b"e", 59: b" ", 64: b"m", 70: b"m",
+        72: b"t", 78: b"t", 82: b"f", 88: b"f",
     }
+    capture_seconds = 0.0
     try:
         while len(frames) < frame_count and time.monotonic() < deadline:
             readable, _, _ = select.select([master], [], [], 0.25)
@@ -238,20 +257,24 @@ def capture_frames(command: list[str], columns: int, rows: int,
         if len(frames) < frame_count:
             tail = buffer[-2000:].decode("utf-8", "replace")
             raise RuntimeError(f"captured {len(frames)}/{frame_count} frames\n{tail}")
+        capture_seconds = time.monotonic() - capture_begin
     finally:
         if process.poll() is None:
             try:
                 os.write(master, b"q")
-                process.wait(timeout=3)
+                if not drain_until_exit(process, master, 0.5):
+                    os.write(master, b"q")
+                if not drain_until_exit(process, master, 2.5):
+                    raise subprocess.TimeoutExpired(command, 3.0)
             except (OSError, subprocess.TimeoutExpired):
                 process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
+                if not drain_until_exit(process, master, 3.0):
                     process.kill()
                     process.wait()
         os.close(master)
-    return frames
+    if process.returncode:
+        raise RuntimeError(f"TUI exited with status {process.returncode}")
+    return frames, capture_seconds
 
 
 def termios_tiocswinsz() -> int:
@@ -322,8 +345,10 @@ def main() -> int:
     command = [str(args.binary.resolve()), args.mode, str(args.model.resolve()),
                str(args.points.resolve())]
     print(f"recording {args.columns}x{args.rows} PTY from {' '.join(command)}", file=sys.stderr)
-    payloads = capture_frames(command, args.columns, args.rows,
-                              args.frames, args.timeout)
+    payloads, capture_seconds = capture_frames(command, args.columns, args.rows,
+                                               args.frames, args.timeout)
+    print(f"captured {len(payloads)} ANSI frames in {capture_seconds:.2f}s "
+          f"({len(payloads) / capture_seconds:.1f} fps)", file=sys.stderr)
     regular, bold, braille = load_fonts(args.font_size)
     images = [draw_screen(parse_screen(payload, args.columns, args.rows), regular, bold, braille,
                           args.cell_width, args.cell_height) for payload in payloads]

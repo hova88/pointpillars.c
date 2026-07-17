@@ -1,10 +1,15 @@
 # The Terminal as a Point-Cloud UI
 
-> **Outcome.** The TUI is not an unrelated demo renderer. It consumes the exact `pp_detections` used by JSON and evaluation, projects points and boxes into an aspect-correct metric view, composes bounded layers into a 2×4 Braille framebuffer, and writes each complete responsive frame in one operation. The checked-in MP4 is recorded from this real ANSI output rather than a parallel mock visualization.
+> **Outcome.** The TUI consumes the exact point tensor and `pp_detections` used
+> by inference, then presents them as a flowing perspective point cloud or an
+> aspect-correct metric BEV. Ten-sweep age, intensity, Z height, 3D boxes, and
+> intermediate animation frames create motion without rerunning the model. The
+> checked MP4 records this real ANSI output rather than a parallel mock.
 
 [![Live PointPillars terminal viewer](../docs/pointpillars-tui.png)](../docs/pointpillars-tui.mp4)
 
-*The wide layout reserves a focused scene inspector without taking the BEV out of metric scale. Click to play the real 8-second capture.*
+*The full-width 3D canvas is the default; the object inspector and engineering
+BEV remain one key away. Click to play the real 8-second capture.*
 
 ![Terminal renderer layer composition](assets/tui-layers.svg)
 
@@ -21,9 +26,19 @@ height = 4 × drawable_rows
 
 [`pp_tui_compose`](../src/tui.c) allocates one byte per logical pixel, plots world geometry, then converts each 2×4 block to a Braille code point. This provides eight times the binary spatial resolution of one-character-per-point ASCII without curses or a graphics server. Its explicit `columns × rows` contract makes a frame deterministic and testable without owning a TTY. [`pp_tui_render`](../src/tui.c) only queries the live terminal size, composes, and performs a bounded `write` loop.
 
-The renderer queries `TIOCGWINSZ` on every frame. Coordinates are projected after center translation, yaw rotation, and zoom. One shared metres-to-logical-pixels scale is chosen from the smaller canvas axis, so a 10 m circle stays circular instead of stretching to fill a rectangular terminal. Resize signals request a redraw even while playback is paused.
+The renderer queries `TIOCGWINSZ` on every frame. The default camera projects
+XYZ through a bounded perspective transform from behind and above the ego
+vehicle. Z therefore changes screen height, and decoded boxes become eight
+corner wireframes with vertical edges. Key `m` switches to the original
+top-down BEV, whose shared metres-to-logical-pixels scale keeps 10 m circles
+circular. Both projections apply the same pan, yaw, and zoom state. Off-screen
+line clipping bounds work even under extreme camera movement.
 
-At 104 columns and 30 rows or larger, the layout becomes a dashboard: a framed BEV remains on the left while a 30-column panel shows per-class counts, active filters, the selected object, its local track, and camera state. Smaller terminals remove the panel and give the entire width to the BEV. Both layouts retain the same two-line header and two-line command/status footer; very small terminals show an explicit resize message instead of wrapping into corrupt output.
+The point cloud owns the full width by default. At 120×40 this expands the
+logical canvas from `176×136` to `236×136`, a 34% horizontal-resolution gain.
+Key `i` opens a 30-column inspector with per-class counts, filters, the selected
+object, its local track, and camera state. The responsive header/footer remain
+bounded; very small terminals show a resize message instead of corrupt output.
 
 ## Layer priority
 
@@ -33,7 +48,7 @@ The byte framebuffer stores the highest-priority mark at each pixel:
 |---:|---|
 | 1 | 10 m range rings |
 | 2 | forward/lateral axes |
-| 3–5 | ground, low, and elevated points |
+| 3–8 | old/mid sweep, ground/low/high, and moving scan-highlight points |
 | 10–19 | dim class-colored trails |
 | 20–29 | class-colored velocity vectors |
 | 30–39 | bright class-colored boxes and heading marks |
@@ -43,13 +58,33 @@ This is a tiny z-buffer. Grid lines cannot erase points, and points cannot erase
 
 ## Geometry layers
 
-- Points use XY position; Z chooses ordinary/elevated color.
-- Rotated boxes use the same `x, y, dx, dy, yaw` decoded for evaluation; a center-to-front stroke makes heading legible even for nearly square boxes.
+- Points use XYZ position. Z controls perspective height, sweep time controls
+  age color, reflectance controls thinning, and a moving time/azimuth band
+  creates the bright scan front.
+- Rotated boxes use the decoded center, dimensions, yaw, and height to draw a
+  3D wireframe; the heading stroke remains legible in BEV.
 - Velocity draws from box center to `(x + vx, y + vy)`.
 - Concentric range rings are drawn every 10 m with forward/lateral axes, then transformed with the view.
 - Ego is a high-priority forward-facing triangular marker at world origin.
 
 Class colors are stable across ten nuScenes classes. Keys `0`–`9` toggle class bits. `,` and `.` adjust the display score threshold from its uncluttered `0.20` default down to the actual `0.10` decode floor. `[` and `]` select among currently visible detections, and the status panel shows pose, dimensions, yaw, velocity, score, local track ID, and history age.
+
+## Sweep flow without fake points
+
+Prepared input contains up to ten sweeps with `time_lag` in feature five. Model
+inference always consumes every point. After inference, the display path makes
+an in-place, deterministic LOD of at most 60,000 real points: up to 30,000
+current, 18,000 mid-age, and 12,000 old points, with unused quota redistributed.
+The original and drawn counts remain visible in the HUD. Low-reflectance
+current points receive one final stable thinning step. This matches the finite
+terminal raster without random sparkle, interpolation, or invented points.
+
+Inference runs in one background worker while the foreground polls at 16 ms
+and continuously redraws the last complete result. A time-lag band advances
+through the ten sweeps while a narrow azimuth highlight rotates across existing
+points; a subtle perspective yaw adds parallax. A scripted real-data PTY run,
+including its first frame and interactions, captured 96 ANSI frames at 25.0
+fps. Key `f` freezes this motion for exact static inspection.
 
 ## Bounded tracking, not a hidden tracker product
 
@@ -66,6 +101,9 @@ This is visualization state, not benchmark output or nuScenes tracking. The code
 | `WASD` | pan |
 | `z` / `e` | rotate |
 | `+` / `-` | zoom |
+| `m` | perspective 3D / metric BEV |
+| `f` | animated sweep flow / static points |
+| `i` | full-width canvas / inspector |
 | `0`–`9`, `c` | toggle classes / restore all |
 | `,` / `.` | score threshold |
 | `[` / `]` | selected target |
@@ -73,7 +111,9 @@ This is visualization state, not benchmark output or nuScenes tracking. The code
 | `h` / `?` | contextual help panel |
 | `r`, `q` | reset view, quit |
 
-Paused redraws reuse the current points and detections; they do not rerun inference. Frame navigation reloads and evaluates the requested frame, then updates tracking once.
+Paused redraws reuse the current points and detections and freeze sweep flow;
+they do not rerun inference. Frame navigation loads and evaluates the requested
+frame, then updates tracking once.
 
 ## Terminal ownership and recovery
 
@@ -81,15 +121,30 @@ Paused redraws reuse the current points and detections; they do not rerun infere
 
 Signal handlers do not call complex terminal APIs. They set `sig_atomic_t` flags; the poll loop returns a quit or redraw action, and normal control flow performs restoration. SIGINT, SIGTERM, SIGHUP, SIGQUIT, and SIGTSTP request clean exit. SIGWINCH requests redraw.
 
-PTY tests compare termios before and after signal exit and check the final ANSI restore sequence. [`tests/test_tui.c`](../tests/test_tui.c) validates state defaults, tracking growth/reset/expiry, wide and compact layout bounds, required HUD content, Braille emission, and byte-for-byte deterministic composition.
+PTY tests compare termios before and after signal exit and check the final ANSI
+restore sequence. [`tests/test_tui.c`](../tests/test_tui.c) validates state
+defaults, tracking, responsive bounds, 3D height sensitivity, BEV height
+invariance, animated frame change, frozen determinism, inspector composition,
+Braille emission, and byte-for-byte repeatability. ASan/UBSan also cover the
+renderer and PTY lifecycle.
 
 ## One frame, one write
 
-The old renderer issued formatting calls while traversing every terminal cell. The new path builds the complete ANSI frame in a growable buffer, changes SGR state only when the winning pixel kind changes, and writes the result with an `EINTR`-safe bounded loop. This removes partial-frame tearing and makes the captured output identical to what an interactive terminal receives. Pixel and text buffers remain proportional to terminal area and are freed after the frame; visualization state itself stays fixed-size.
+The renderer builds the complete ANSI frame in a growable buffer, changes SGR
+state only when the winning pixel kind changes, and uses one `EINTR`-safe write
+loop. Lifting camera trigonometry out of the point loop reduced 30 full
+265,562-point perspective compositions to `4.75 ms/frame` without concurrent
+inference. Runtime display LOD further bounds foreground work while the worker
+processes the next full frame. Pixel and text buffers remain proportional to
+terminal area; visualization state is fixed-size.
 
 ## Reproducible MP4
 
-[`tools/record_tui.py`](../tools/record_tui.py) opens a 120×40 pseudo-terminal and runs the real viewer over prepared nuScenes frames. On macOS, `make tui-video` records the native Accelerate/BNNS `tui` path and uses the system PTY ioctl plus Menlo/Apple Braille fonts. On Linux/WSL it records `tui-cuda` with cuDNN by default. It scripts selection, zoom, rotation, pause, filters, help, and layer controls; parses ANSI 256-color cells; rasterizes the Braille glyphs with a font that actually covers U+2800–U+28FF; and streams raw RGB frames to H.264 through `ffmpeg`.
+[`tools/record_tui.py`](../tools/record_tui.py) opens a 120×40 pseudo-terminal
+and runs the real viewer over prepared nuScenes frames. It scripts 3D/BEV
+switching, sweep-flow freeze, selection, zoom, rotation, pause, filters, help,
+and layers; parses ANSI 256-color cells; rasterizes the actual Braille glyphs;
+and streams raw RGB frames to H.264 through `ffmpeg`.
 
 ```sh
 .venv/bin/python -m pip install Pillow
@@ -99,8 +154,9 @@ make tui-video PYTHON=.venv/bin/python \
 
 The checked macOS artifact comes from the native Accelerate backend over the
 real 404-frame nuScenes mini preparation. It is 1200×720, 12 FPS, 8 seconds,
-YUV420P/H.264, and 2.68 MiB. The selected poster is frame 36/404 with 267,752
-input points and live selection/trail state. Its poster and MP4 live under
+YUV420P/H.264, and 1.56 MiB. The selected poster is a full-width perspective
+frame with 265,790 input points, 60,000 drawn points, sweep flow, Z-separated
+structures, and 3D detections. Its poster and MP4 live under
 `docs/` because they are README-facing documentation artifacts; transient
 recording state never enters the repository. Exact hashes and the complete
 local audit are in [the macOS + nuScenes mini chapter](13-local-macos-nuscenes-mini.md).
@@ -111,6 +167,11 @@ local audit are in [the macOS + nuScenes mini chapter](13-local-macos-nuscenes-m
 - A terminal can support meaningful metric interaction when pixel packing, physical aspect ratio, layer priority, and responsive information hierarchy are explicit.
 - Terminal state is an owned resource. Recovery paths deserve tests just like memory mappings and CUDA buffers.
 
-## What remains
+## Boundaries
 
-The runtime TUI intentionally stays top-down and dependency-free. Pillow and `ffmpeg` are documentation-time dependencies only. A future 3D view would need depth ordering and camera controls; at that point a real graphics backend may be more honest than forcing perspective into Braille.
+The runtime remains dependency-free ANSI/Braille; Pillow and `ffmpeg` are used
+only to produce documentation media. Perspective is a visualization camera,
+not a second inference coordinate system, and `m` always restores metric BEV.
+Terminals still quantize geometry to Braille dots, but full-width packing,
+stable thinning, depth, age color, and temporal flow avoid presenting the
+scene as a static wall of binary pixels.

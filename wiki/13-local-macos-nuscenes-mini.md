@@ -143,19 +143,21 @@ make evaluate EVAL_PYTHON=.venv-eval/bin/python
 
 The README media was regenerated from the native Accelerate executable and
 the 404 real prepared frames, not from a synthetic fixture or parallel mock.
-The PTY script exercised selection, zoom, rotation, pause, frame stepping,
-filters, help, and trails.
+The PTY script exercised perspective 3D/BEV switching, sweep-flow freeze,
+inspector layout, selection, zoom, rotation, pause, filters, help, and trails.
 
 ```text
 120 × 40 terminal · 96 captured frames · 12 FPS · 8.0 seconds
-1200 × 720 H.264 · YUV420P · fast-start · 2.68 MiB
-MP4 SHA-256 3752af33bd02c8d450fd6489354aaea86c844e95f25f5ade84d609b69f5a7ae3
-poster SHA-256 d58a7ee7a7b6905bfc19f12c244480e7bcab34e0b056ac55060e2df44e78e544
+1200 × 720 H.264 · YUV420P · fast-start · 1.56 MiB
+MP4 SHA-256 ac08ecf6fe7aa8501a74e5581be58f9cdb5be2ffc6de45821dba7f812d2d7d2b
+poster SHA-256 870665d3aae03527cdb0d93464fd39e721f469b21e5ef252ec91376e6165f476
 ```
 
-The selected poster frame shows frame 36/404, 267,752 input points, 102
-decoded objects, 29 visible at score 0.20, an active local track, 10 m rings,
-and a measured 292.39 ms inference call.
+The selected poster shows frame 3/404 with 265,790 input points, 60,000 display
+points, 64 decoded objects, 15 visible at score 0.20, full-width perspective
+height, time/azimuth sweep flow, 3D boxes, and a measured 293.73 ms inference
+call. The scripted capture reports 25.0 real ANSI frames/s including first-load
+and interaction frames; H.264 remains encoded at 12 FPS for an 8-second demo.
 
 ## Reproduce only what you need
 

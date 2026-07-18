@@ -34,7 +34,7 @@ Each candidate carries ten codes:
 
 Anchor centers span the 128×128 output grid over the `[-51.2, 51.2]` range. Each class has one configured size, bottom height, and two rotations. Angle reconstruction uses `atan2` on the predicted sine/cosine pair plus the anchor rotation.
 
-The result is `pp_box`: position, dimensions, yaw, velocity, score, and class ID. JSON output, official evaluation, and TUI all consume this exact structure.
+The result is `pp_box`: position, dimensions, yaw, velocity, score, and class ID. JSON output and the TUI both consume this exact structure.
 
 ## Rotated IoU without an external geometry library
 

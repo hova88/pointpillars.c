@@ -1,23 +1,25 @@
 # pointpillars.c
 
-[![PointPillars live terminal viewer](docs/pointpillars-tui.png)](docs/pointpillars-tui.mp4)
-
-*Click the poster to watch native inference drive a flowing 3D terminal point cloud.*
-
 A small, auditable C11 runtime for the OpenPCDet nuScenes PointPillars
 MultiHead checkpoint. It turns ten lidar sweeps into 3D detections without
 Python at runtime, and runs natively on macOS, Linux, and WSL.
 
+[![PointPillars terminal viewer](docs/pointpillars-tui.gif)](docs/pointpillars-tui.mp4)
+
+*The GIF plays directly on GitHub; click it for the original MP4.*
+
 ```text
-265,562 points → 28,517 pillars → 69 boxes
-Apple M2 · Accelerate/BNNS · 302.983 ms warm median
+26,414 points → 7,854 pillars → 109 boxes
+Intel i5-14600KF · OpenMP/AVX2 · 503.105 ms warm median
 ```
 
 ## The idea
 
-PointPillars becomes dense after scatter. The runtime keeps the sparse front
-end simple, reuses bounded dense activation arenas, maps a 23 MiB frozen model
-directly into memory, and gives each platform an explicit acceleration path:
+PointPillars becomes dense at the first BEV convolution. The CPU route reads
+live pillars directly through the voxel grid, while accelerator routes may
+materialize scatter. The runtime reuses bounded activation arenas, maps a
+23 MiB frozen model directly into memory, and gives each platform an explicit
+acceleration path:
 
 - Accelerate/BNNS on Apple Silicon;
 - OpenMP and AVX2/FMA on x86 CPU;
@@ -34,11 +36,10 @@ are checked against the original PyTorch checkpoint.
 - deterministic `.pth` → `.ppw` conversion and OpenPCDet-compatible ten-sweep
   nuScenes preparation;
 - single-frame, benchmark, batch, and interactive terminal modes;
-- reproducible JSON performance reports, with official nuScenes evaluation as
-  an optional, separately installed workflow;
+- reproducible JSON performance reports and checkpoint-oracle validation;
 - a responsive ANSI/Braille 3D point cloud and BEV where every in-view point
-  contributes through density-aware rendering, with sweep flow, height/age
-  shading, filters, trails, selection, camera controls, and terminal recovery.
+  contributes through density-aware rendering, with height/age shading,
+  filters, trails, selection, camera controls, and terminal recovery.
 
 ## Quick start
 
@@ -69,35 +70,31 @@ frame=$(find /data/nuscenes/pointpillars_10sweep \
   nuscenes_multihead.ppw /data/nuscenes/pointpillars_10sweep
 ```
 
-Use `m` to switch between perspective 3D and metric BEV, `f` to freeze sweep
-flow, `i` for the inspector, `Space` to pause, arrows to step, `WASD` to pan,
+Use `m` to switch between perspective 3D and metric BEV, `i` for the inspector,
+`Space` to pause, arrows to step, `WASD` to pan,
 and `z`/`e` to rotate. The [TUI chapter](wiki/08-terminal-visualizer.md) has the
 full interaction map.
 
 ## Honest numbers
 
-The current macOS review uses a real 265,562-point, ten-sweep nuScenes mini
-frame on an 8-core Apple M2. Run zero is cold; the table reports 19 warm runs.
+The current CPU review uses one real 26,414-point frame with 7,854 live
+pillars on a 16-thread Intel i5-14600KF under WSL. Three alternating report
+pairs contribute 36 warm samples per route in the same binary.
 
-| Path | Warm median | p95 | Raw checkpoint oracle |
-|---|---:|---:|---:|
-| Apple Accelerate/BNNS | **302.983 ms** | 315.578 ms | max abs `8.96e-4`, pass |
-| GGML build on macOS | 305.907 ms | 307.515 ms | same strict output |
+| First BEV route | Warm median | Visible workspace |
+|---|---:|---:|
+| direct sparse grid | **503.105 ms** | **65.917 MiB** |
+| materialized dense (`PP_CPU_DENSE_FIRST=1`) | 518.493 ms | 129.917 MiB |
 
-GGML is not promoted on macOS because Accelerate already handles its candidate
-shapes first. On the full mini set, CPU batch produced 22,109 boxes across
-404/404 frames. The optional, isolated devkit workflow previously reproduced
-mini-val mAP `0.2055` and NDS `0.3280`; it is not required for build, inference,
-tests, or the TUI. The checked WSL/NVIDIA reference reaches 12.160 ms with
-strict cuDNN compact detection; fixtures and machines differ, so the numbers
-are not mixed.
+The sparse route is 2.97% faster by median and removes the 64 MiB scatter
+arena. Its PyTorch checkpoint comparison passes with max absolute error
+`0.0010023` and mean absolute error `1.06e-5`.
 
 Reproduce the local report and oracle:
 
 ```sh
-make perf-cpu PERF_FRAME="$frame" PERF_REPS=20 PERF_THREADS=8 \
-  PYTHON=.venv/bin/python
-make checkpoint-oracle PERF_FRAME="$frame" PYTHON=.venv/bin/python
+make perf-cpu PERF_FRAME="$frame" PERF_REPS=20 PERF_THREADS=16
+make checkpoint-oracle PERF_FRAME="$frame"
 ```
 
 ## Documentation

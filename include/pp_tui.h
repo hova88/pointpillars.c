@@ -15,11 +15,12 @@ typedef struct {
     float score_threshold;
     unsigned class_mask;
     int paused, show_points, show_boxes, show_velocity, show_grid, show_tracks;
-    int show_help, show_sidebar, animate_points, perspective, selected;
-    unsigned animation_tick;
+    int show_help, show_sidebar, perspective, selected;
     pp_tui_track tracks[PP_TUI_MAX_TRACKS];
     size_t track_count, last_frame;
     int next_track_id, have_last_frame;
+    unsigned char input[32];
+    size_t input_length;
 } pp_tui_state;
 
 typedef struct {
@@ -35,7 +36,6 @@ void pp_tui_end(void);
 int pp_tui_poll(pp_tui_state *state, int timeout_ms);
 void pp_tui_update_tracks(pp_tui_state *state,
                           const pp_detections *detections, size_t frame);
-void pp_tui_advance_animation(pp_tui_state *state);
 int pp_tui_compose(const float *points, size_t count, size_t stride,
                    const pp_detections *detections, size_t frame,
                    size_t frame_count, double inference_ms,

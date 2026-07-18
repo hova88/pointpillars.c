@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img">
   <title>Terminal visualizer compositing layers</title>
-  <desc>All in-view points accumulate density while range rings, age and height colors, sweep flow, tracks, velocity, 3D boxes, selection, and ego are composed into Braille cells with bounded state.</desc>
+  <desc>All in-view points accumulate density while range rings, age and height colors, tracks, velocity, 3D boxes, selection, and ego are composed into Braille cells with bounded state.</desc>
   <defs>
     <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0L9 3 0 6Z" fill="#f59e0b"/></marker>
     <style>.t{fill:#e8edf2;font:21px system-ui}.m{fill:#a7b2c1;font:16px ui-monospace,monospace}.a{stroke:#f59e0b;stroke-width:4;fill:none;marker-end:url(#a)}</style>
@@ -26,7 +26,7 @@
     <g class="m">
       <text x="30" y="50">1       range rings</text>
       <text x="30" y="88">2       metric axes</text>
-      <text x="30" y="126" fill="#84cc16">3…8     age + height + flow</text>
+      <text x="30" y="126" fill="#84cc16">3…8     age + height</text>
       <text x="30" y="164" fill="#a855f7">10…19   trails</text>
       <text x="30" y="202" fill="#22d3ee">20…29   velocity</text>
       <text x="30" y="240" fill="#f59e0b">30…39   boxes + heading</text>
@@ -36,7 +36,7 @@
     <g fill="#e8edf2"><circle cx="332" cy="68" r="5"/><circle cx="350" cy="86" r="5"/><circle cx="332" cy="104" r="5"/><circle cx="350" cy="122" r="5"/></g>
     <text x="341" y="164" text-anchor="middle" class="m">Braille</text>
     <text x="210" y="338" text-anchor="middle" class="t">one canonical pp_detections</text>
-    <text x="210" y="370" text-anchor="middle" class="m">same boxes as JSON and evaluation</text>
+    <text x="210" y="370" text-anchor="middle" class="m">same boxes as JSON output</text>
   </g>
-  <text x="70" y="615" class="m">3D / BEV · all-point density · async inference · continuous flow · signal-safe restore</text>
+  <text x="70" y="615" class="m">3D / BEV · all-point density · async inference · event-driven redraw · signal-safe restore</text>
 </svg>

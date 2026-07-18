@@ -33,7 +33,7 @@ CUDA_SWITCHES = (
     "PP_CUDNN_DISABLE", "PP_CUDNN_GRAPH", "PP_CUDNN_GROUP_HEADS", "PP_CUDNN_NONDETERMINISTIC", "PP_CUDNN_SEPARATE_BIAS",
     "PP_CUDNN_TF32", "PP_CUDNN_WORKSPACE_MIB",
 )
-CPU_SWITCHES = ("PP_APPLE_CONV2", "PP_APPLE_DISABLE", "PP_APPLE_DECONV_DISABLE", "PP_APPLE_MIN_SPATIAL", "PP_APPLE_PLAIN_DISABLE", "PP_CPU_OC4", "PP_CPU_PLAIN_ACCUM", "PP_CPU_PLAIN_OC1", "PP_CPU_PLAIN_OC2", "PP_CPU_PLAIN_OC4", "PP_CPU_S2OC4", "PP_GGML_DISABLE")
+CPU_SWITCHES = ("PP_APPLE_CONV2", "PP_APPLE_DISABLE", "PP_APPLE_DECONV_DISABLE", "PP_APPLE_MIN_SPATIAL", "PP_APPLE_PLAIN_DISABLE", "PP_CPU_DENSE_FIRST", "PP_CPU_OC4", "PP_CPU_PLAIN_ACCUM", "PP_CPU_PLAIN_OC1", "PP_CPU_PLAIN_OC2", "PP_CPU_PLAIN_OC4", "PP_CPU_S2OC4")
 RUNTIME_ENV = (
     "OMP_NUM_THREADS", "OMP_PROC_BIND", "OMP_PLACES", "OMP_DYNAMIC",
     "OMP_WAIT_POLICY", "CUDA_VISIBLE_DEVICES",
@@ -105,7 +105,7 @@ def linked_accelerators(binary):
              else command_output(["ldd", str(binary)])
     if output is None:
         return []
-    names = ("accelerate", "bnns", "cudnn", "cuda", "ggml", "gomp", "omp")
+    names = ("accelerate", "bnns", "cudnn", "cuda", "gomp", "omp")
     return [line.strip() for line in output.splitlines()
             if any(name in line.lower() for name in names)]
 

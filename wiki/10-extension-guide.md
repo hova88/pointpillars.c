@@ -61,7 +61,9 @@ Update them together. A five-float input with the wrong fifth-channel meaning pa
 
 ## Add an output format
 
-Consume `pp_detections`, not raw branch tensors. [`write_detections`](../src/main.c), submission conversion, and TUI demonstrate three consumers of the canonical representation. New consumers should not reimplement sigmoid, anchor decode, or NMS.
+Consume `pp_detections`, not raw branch tensors. JSON output and the TUI both
+consume this canonical representation. New consumers should not reimplement
+sigmoid, anchor decode, or NMS.
 
 If raw output is required for an oracle or downstream research, use `pp_raw_output` and state the 236-plane order. Do not silently switch an API from full raw to compact candidates.
 
@@ -90,13 +92,11 @@ Preserve frame order and propagate errors across threads. Throughput improvement
 ```sh
 make test             # normal CPU fixtures
 make portable-test    # no OpenMP
-make ggml             # pinned optional CPU hybrid
 make cuda             # custom optional accelerator
 make cudnn             # optional strict FP32/FMA accelerator
 make cudnn-test        # scalar cuDNN operator fixtures
 make checkpoint-oracle
 make checkpoint-oracle-cudnn
-make evaluate
 ```
 
 Run the Wiki validator after documentation changes:
@@ -110,8 +110,6 @@ python3 skills/siboehm-blog/scripts/check_wiki.py wiki --repository-root .
 - [CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/)
 - [CUDA WMMA API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#wmma)
 - [NVIDIA cuDNN](https://docs.nvidia.com/deeplearning/cudnn/latest/index.html)
-- [GGML](https://github.com/ggml-org/ggml)
-- [GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 - [CUTLASS efficient GEMM documentation](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/efficient_gemm.md)
 - [OpenMP specification](https://www.openmp.org/specifications/)
 - [nuScenes detection task](https://www.nuscenes.org/object-detection/)

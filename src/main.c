@@ -46,8 +46,6 @@ static const char *tui_backend_name(int use_cuda) {
     if (!use_cuda) {
 #ifdef PP_WITH_ACCELERATE
         return getenv("PP_APPLE_DISABLE") ? "CPU scalar/SIMD" : "Apple Accelerate/BNNS";
-#elif defined(PP_WITH_GGML)
-        return getenv("PP_GGML_DISABLE") ? "CPU AVX2" : "CPU + GGML";
 #else
         return "CPU AVX2";
 #endif
@@ -85,6 +83,7 @@ typedef struct {
 typedef struct {
     pp_model *model;
     pp_raw_output *raw;
+    pp_cpu_workspace cpu_workspace;
     char **names;
     size_t frame_count;
     int use_cuda, compact_cuda;
@@ -152,8 +151,10 @@ static void *tui_prepare_frames(void *argument) {
         else
 #endif
         if (good)
-            good = pp_infer_cpu(pipe->model, &pipe->pillars, pipe->raw, &profile,
-                                result->error, sizeof(result->error));
+            good = pp_infer_cpu(
+                pipe->model, &pipe->pillars, pipe->raw,
+                &pipe->cpu_workspace, &profile,
+                result->error, sizeof(result->error));
         double elapsed = monotonic_ms() - begin;
         if (good && !pipe->compact_cuda)
             good = pp_decode(pipe->raw, .1f, .2f, &pipe->detections);
@@ -249,6 +250,7 @@ static void tui_pipe_end(tui_pipe *pipe) {
         pthread_join(pipe->thread, NULL);
     }
     tui_result_free(pipe->ready);
+    pp_cpu_workspace_free(&pipe->cpu_workspace);
     pp_pillars_free(&pipe->pillars);
     pp_detections_free(&pipe->detections);
     pthread_cond_destroy(&pipe->changed);
@@ -299,12 +301,11 @@ int main(int argc,char **argv){
        if(!running){directory_ok=0;snprintf(error,sizeof error,"%s",current?current->error:"TUI worker stopped before the first frame");}
        if(running){pp_detections view={current->boxes,current->box_count,current->box_count};pp_tui_update_tracks(&ui,&view,fi);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
        while(running){
-        int action=pp_tui_poll(&ui,16);
+        int action=pp_tui_poll(&ui,50);
         if(action==PP_TUI_QUIT)break;
         if(action==PP_TUI_NEXT||action==PP_TUI_PREV){size_t base=manual_pending?requested:fi;requested=action==PP_TUI_PREV?(base?base-1:nf-1):(base+1)%nf;manual_pending=1;tui_pipe_request(&pipe,requested);}
         pp_detections view={current->boxes,current->box_count,current->box_count};
         if(action==PP_TUI_REDRAW)pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);
-        else if(action==PP_TUI_NONE&&!ui.paused&&ui.animate_points){pp_tui_advance_animation(&ui);pp_tui_render(current->points,current->point_count,5,&view,fi,nf,current->inference_ms,backend,&ui);}
         tui_result *next=(!ui.paused||manual_pending)?tui_pipe_take(&pipe,0):NULL;
         if(!next)continue;
         if(!next->ok){snprintf(error,sizeof error,"%s",next->error);tui_result_free(next);directory_ok=0;break;}
@@ -314,22 +315,22 @@ int main(int argc,char **argv){
         if(!ui.paused){requested=(fi+1)%nf;tui_pipe_request(&pipe,requested);}
        }
        pp_tui_end();tui_pipe_end(&pipe);tui_result_free(current);if(error[0])fprintf(stderr,"error: %s\n",error);
-      } else {prep_pipe pipe;pp_detections dd={0};int depth=getenv("PP_NO_PREFETCH")?1:2,pipeline=prep_pipe_start(&pipe,names,nf,depth);
+      } else {prep_pipe pipe;pp_detections dd={0};pp_cpu_workspace cpu_workspace={0};int depth=getenv("PP_NO_PREFETCH")?1:2,pipeline=prep_pipe_start(&pipe,names,nf,depth);
        if(!pipeline||!pp_detections_alloc(&dd,1000))directory_ok=0;
        else for(size_t fi=0;fi<nf;fi++){pp_profile pr;prep_slot*s=prep_pipe_get(&pipe,fi);if(s->state==3){fprintf(stderr,"error: %s\n",s->error);directory_ok=0;break;}
         struct timespec ta,tb;clock_gettime(CLOCK_MONOTONIC,&ta);
 #ifdef PP_WITH_CUDA
-        int good=use_cuda?(compact_cuda?pp_infer_cuda_detect(&m,&s->pillars,&dd,.1f,.2f,&pr,error,sizeof error):pp_infer_cuda(&m,&s->pillars,&ro,&pr,error,sizeof error)):pp_infer_cpu(&m,&s->pillars,&ro,&pr,error,sizeof error);
+        int good=use_cuda?(compact_cuda?pp_infer_cuda_detect(&m,&s->pillars,&dd,.1f,.2f,&pr,error,sizeof error):pp_infer_cuda(&m,&s->pillars,&ro,&pr,error,sizeof error)):pp_infer_cpu(&m,&s->pillars,&ro,&cpu_workspace,&pr,error,sizeof error);
 #else
-        int good=pp_infer_cpu(&m,&s->pillars,&ro,&pr,error,sizeof error);
+        int good=pp_infer_cpu(&m,&s->pillars,&ro,&cpu_workspace,&pr,error,sizeof error);
 #endif
         clock_gettime(CLOCK_MONOTONIC,&tb);double elapsed=(tb.tv_sec-ta.tv_sec)*1e3+(tb.tv_nsec-ta.tv_nsec)/1e6,decode0=monotonic_ms();if(good&&!compact_cuda)good=pp_decode(&ro,.1f,.2f,&dd);double decode_ms=compact_cuda?0:monotonic_ms()-decode0;if(!good){fprintf(stderr,"%s\n",error);directory_ok=0;prep_pipe_release(&pipe,s);break;}const char*base=strrchr(names[fi],'/');base=base?base+1:names[fi];char path[2048];snprintf(path,sizeof path,"%s/%s.json",argv[4],base);good=write_detections(path,&dd);fprintf(stderr,"[%zu/%zu] %s: %zu boxes infer %.2f ms prep %.2f ms decode %.2f ms d2h %.1f KiB\n",fi+1,nf,base,dd.count,elapsed,s->prep_ms,decode_ms,pr.device_to_host_bytes/1024.0);prep_pipe_release(&pipe,s);if(!good){directory_ok=0;break;}}
-       pp_detections_free(&dd);if(pipeline)prep_pipe_end(&pipe);}
+       pp_cpu_workspace_free(&cpu_workspace);pp_detections_free(&dd);if(pipeline)prep_pipe_end(&pipe);}
       pp_output_free(&ro);for(size_t i=0;i<nf;i++)free(names[i]);free(names);pp_model_close(&m);return directory_ok?0:1;
     }
     size_t stride=argc>5?(size_t)strtoul(argv[5],NULL,10):5,count=0;float *points=NULL;
     if(!pp_load_points(argv[3],stride,&points,&count,error,sizeof error)){fprintf(stderr,"error: %s\n",error);pp_model_close(&m);return 1;}
-    pp_pillars p;pp_voxel_stats vs;pp_raw_output out={0};pp_profile pr;pp_detections det={0};
+    pp_pillars p;pp_voxel_stats vs;pp_raw_output out={0};pp_cpu_workspace cpu_workspace={0};pp_profile pr;pp_detections det={0};
     if(!pp_pillars_alloc(&p)||(!compact_bench&&!pp_output_alloc(&out))||!pp_voxelize(points,count,stride,&p,&vs)||
        (compact_bench&&!pp_detections_alloc(&det,1000))){
       fprintf(stderr,"error: allocation/voxelization failed\n");free(points);pp_model_close(&m);return 1;}
@@ -340,19 +341,19 @@ int main(int argc,char **argv){
       for(int k=0;k<reps;k++){
 #ifdef PP_WITH_CUDA
         ok=compact_bench?pp_infer_cuda_detect(&m,&p,&det,.1f,.2f,&pr,error,sizeof error):
-           (use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error));
+           (use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&cpu_workspace,&pr,error,sizeof error));
 #else
-        ok=pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);
+        ok=pp_infer_cpu(&m,&p,&out,&cpu_workspace,&pr,error,sizeof error);
 #endif
         if(!ok){fprintf(stderr,"error: %s\n",error);break;}fprintf(stderr,"run %d total %.3f ms (pfn %.3f, scatter %.3f, backbone %.3f, heads %.3f, workspace %zu, d2h %zu)\n",k,pr.total_ms,pr.pfn_ms,pr.scatter_ms,pr.backbone_ms,pr.heads_ms,pr.workspace_bytes,pr.device_to_host_bytes);if(k)sum+=pr.total_ms;
       }
       if(ok&&reps>1)fprintf(stderr,"warm mean %.2f ms over %d runs\n",sum/(reps-1),reps-1);
-      pp_detections_free(&det);pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
+      pp_cpu_workspace_free(&cpu_workspace);pp_detections_free(&det);pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
     }
 #ifdef PP_WITH_CUDA
-    ok=use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);
+    ok=use_cuda?pp_infer_cuda(&m,&p,&out,&pr,error,sizeof error):pp_infer_cpu(&m,&p,&out,&cpu_workspace,&pr,error,sizeof error);
 #else
-    ok=pp_infer_cpu(&m,&p,&out,&pr,error,sizeof error);
+    ok=pp_infer_cpu(&m,&p,&out,&cpu_workspace,&pr,error,sizeof error);
 #endif
     if(ok&&pp_detections_alloc(&det,1000)){ok=pp_decode(&out,.1f,.2f,&det);fprintf(stderr,"detections=%zu\n",det.count);
       for(size_t i=0;i<det.count&&i<10;++i){pp_box*b=det.boxes+i;fprintf(stderr,"  %zu class=%d score=%.3f xyz=(%.2f %.2f %.2f) size=(%.2f %.2f %.2f) yaw=%.2f\n",i,b->class_id,b->score,b->x,b->y,b->z,b->dx,b->dy,b->dz,b->yaw);}if(ok&&argc>6)ok=write_detections(argv[6],&det);pp_detections_free(&det);}
@@ -360,5 +361,5 @@ int main(int argc,char **argv){
     if(ok)fprintf(stderr,"pfn %.2f ms | scatter %.2f ms | backbone %.2f ms | heads %.2f ms | total %.2f ms | workspace %.1f MiB\n",
       pr.pfn_ms,pr.scatter_ms,pr.backbone_ms,pr.heads_ms,pr.total_ms,pr.workspace_bytes/1048576.0);
     else fprintf(stderr,"error: %s\n",error);
-    pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
+    pp_cpu_workspace_free(&cpu_workspace);pp_output_free(&out);pp_pillars_free(&p);free(points);pp_model_close(&m);return ok?0:1;
 }

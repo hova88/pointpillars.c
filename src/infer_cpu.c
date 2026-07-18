@@ -4,9 +4,6 @@
 #ifdef PP_WITH_ACCELERATE
 #include "pp_apple.h"
 #endif
-#ifdef PP_WITH_GGML
-#include "pp_ggml.h"
-#endif
 
 #include <math.h>
 #include <stdarg.h>
@@ -21,8 +18,6 @@
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
-
-typedef struct { int ci, co, h, w, stride; const char *id; } conv_spec;
 
 static double now_ms(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -218,6 +213,11 @@ void pp_output_free(pp_raw_output *o) {
     if (!o) return;
     free(o->data);memset(o,0,sizeof(*o));
 }
+void pp_cpu_workspace_free(pp_cpu_workspace *workspace) {
+    if (!workspace) return;
+    free(workspace->data);
+    memset(workspace, 0, sizeof(*workspace));
+}
 int pp_head_classes(int h){static const int n[6]={1,2,2,1,2,2};return (unsigned)h<6?n[h]:0;}
 int pp_branch_channels(int h,int b){static const int mul[6]={0,4,2,6,4,4};int c=pp_head_classes(h);return b==0?2*c*c:(unsigned)b<6?c*mul[b]:0;}
 float *pp_output_branch(const pp_raw_output*o,int h,int b){size_t off=0,hw=(size_t)PP_OUT_H*PP_OUT_W;for(int i=0;i<h;i++)for(int j=0;j<6;j++)off+=(size_t)pp_branch_channels(i,j)*hw;for(int j=0;j<b;j++)off+=(size_t)pp_branch_channels(h,j)*hw;return o&&o->data?o->data+off:NULL;}
@@ -229,10 +229,6 @@ void pp_cpu_conv3_relu(const float *restrict x, float *restrict y,
                        int ci, int co, int hi, int wi, int stride) {
 #ifdef PP_WITH_ACCELERATE
     if (pp_apple_conv(x, y, w, b, ci, co, hi, wi, 3, stride, 1, 1)) return;
-#endif
-#ifdef PP_WITH_GGML
-    if (getenv("PP_GGML_DISABLE") == NULL &&
-        pp_ggml_conv3_relu(x, y, w, b, ci, co, hi, wi, stride)) return;
 #endif
 #ifdef __AVX2__
     static int use_oc8 = -1;
@@ -485,136 +481,108 @@ static int get4(const pp_model *m, const char *n, uint32_t a,uint32_t b,uint32_t
     uint32_t d[4] = {a,b,c,d0}; return (*p = pp_model_tensor(m,n,d,4)) != NULL;
 }
 
-#if 0
-static int run_conv(const pp_model *m, const conv_spec *s, const float *x, float *y,
-                    char *error, size_t cap) {
-    char nw[48], nb[48]; snprintf(nw,sizeof nw,"conv.%s.weight",s->id); snprintf(nb,sizeof nb,"conv.%s.bias",s->id);
-    const float *w, *b;
-    if (!get4(m,nw,s->co,s->ci,3,3,&w) || !get1(m,nb,s->co,&b))
-        return fail(error,cap,"missing or invalid %s",s->id);
-    conv3_relu(x,y,w,b,s->ci,s->co,s->h,s->w,s->stride); return 1;
-}
-
-static int run_deconv(const pp_model *m, int id, const float *x, float *y,
-                      int ci,int h,int w,int k,char *error,size_t cap) {
-    char nw[48],nb[48]; snprintf(nw,sizeof nw,"deconv.%d.weight",id); snprintf(nb,sizeof nb,"deconv.%d.bias",id);
-    const float *wt,*bias;
-    if (!get4(m,nw,ci,128,k,k,&wt)||!get1(m,nb,128,&bias)) return fail(error,cap,"invalid deconv %d",id);
-    deconv_relu(x,y,wt,bias,ci,h,w,k); return 1;
-}
-
-static void head3(const float *a,const float *b,const float *c,float *y,
-                  const float *w,const float *bias,int co) {
-    size_t hw=(size_t)PP_OUT_H*PP_OUT_W;
-    #pragma omp parallel for schedule(static)
-    for(int oc=0;oc<co;++oc){
-        float *yo=y+(size_t)oc*hw;
-        for(size_t pb=0;pb<hw;pb+=1024){
-          size_t pe=pb+1024<hw?pb+1024:hw;
-          #pragma omp simd
-          for(size_t p=pb;p<pe;++p)yo[p]=bias[oc];
-          for(int ic=0;ic<384;++ic){
-            const float *xi=ic<128?a+(size_t)ic*hw:ic<256?b+(size_t)(ic-128)*hw:c+(size_t)(ic-256)*hw;
-            float q=w[(size_t)oc*384+ic];
-            #pragma omp simd
-            for(size_t p=pb;p<pe;++p) yo[p]+=xi[p]*q;
-          }
+/* The first BEV convolution sees only live pillars.  Eight output channels
+ * share each pillar feature while preserving the dense kernel's ic/ky/kx
+ * accumulation order. */
+static int sparse_first_conv(const pp_model *m, const pp_pillars *p,
+                             const float *pillar, float *output,
+                             char *error, size_t cap) {
+    const float *weights;
+    const float *bias;
+    if (!get4(m, "backbone.0.0.weight", 64, 64, 3, 3, &weights) ||
+        !get1(m, "backbone.0.0.bias", 64, &bias))
+        return fail(error, cap, "invalid tensor backbone.0.0");
+    const int height = 256;
+    const int width = 256;
+    const int pillars = p->pillar_count;
+    const size_t plane = (size_t)height * width;
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int og = 0; og < 64; og += 8) for (int oy = 0; oy < height; ++oy) {
+        float *out[8] = {
+            output + (size_t)(og + 0) * plane,
+            output + (size_t)(og + 1) * plane,
+            output + (size_t)(og + 2) * plane,
+            output + (size_t)(og + 3) * plane,
+            output + (size_t)(og + 4) * plane,
+            output + (size_t)(og + 5) * plane,
+            output + (size_t)(og + 6) * plane,
+            output + (size_t)(og + 7) * plane
+        };
+        for (int ox = 0; ox < width; ++ox) {
+            int neighbor[9];
+            for (int ky = 0; ky < 3; ++ky) for (int kx = 0; kx < 3; ++kx) {
+                int iy = oy * 2 + ky - 1;
+                int ix = ox * 2 + kx - 1;
+                neighbor[ky * 3 + kx] =
+                    (unsigned)iy < PP_GRID_Y && (unsigned)ix < PP_GRID_X ?
+                    p->grid[(size_t)iy * PP_GRID_X + ix] : -1;
+            }
+            float a0 = bias[og + 0], a1 = bias[og + 1];
+            float a2 = bias[og + 2], a3 = bias[og + 3];
+            float a4 = bias[og + 4], a5 = bias[og + 5];
+            float a6 = bias[og + 6], a7 = bias[og + 7];
+            for (int ic = 0; ic < 64; ++ic) for (int k = 0; k < 9; ++k) {
+                int pi = neighbor[k];
+                if ((unsigned)pi >= (unsigned)pillars) continue;
+                float value = pillar[(size_t)ic * pillars + pi];
+                a0 += value * weights[((size_t)(og + 0) * 64 + ic) * 9 + k];
+                a1 += value * weights[((size_t)(og + 1) * 64 + ic) * 9 + k];
+                a2 += value * weights[((size_t)(og + 2) * 64 + ic) * 9 + k];
+                a3 += value * weights[((size_t)(og + 3) * 64 + ic) * 9 + k];
+                a4 += value * weights[((size_t)(og + 4) * 64 + ic) * 9 + k];
+                a5 += value * weights[((size_t)(og + 5) * 64 + ic) * 9 + k];
+                a6 += value * weights[((size_t)(og + 6) * 64 + ic) * 9 + k];
+                a7 += value * weights[((size_t)(og + 7) * 64 + ic) * 9 + k];
+            }
+            size_t index = (size_t)oy * width + ox;
+            out[0][index] = a0 > 0.0f ? a0 : 0.0f;
+            out[1][index] = a1 > 0.0f ? a1 : 0.0f;
+            out[2][index] = a2 > 0.0f ? a2 : 0.0f;
+            out[3][index] = a3 > 0.0f ? a3 : 0.0f;
+            out[4][index] = a4 > 0.0f ? a4 : 0.0f;
+            out[5][index] = a5 > 0.0f ? a5 : 0.0f;
+            out[6][index] = a6 > 0.0f ? a6 : 0.0f;
+            out[7][index] = a7 > 0.0f ? a7 : 0.0f;
         }
     }
+    return 1;
 }
-
-int pp_infer_cpu(const pp_model *m,const pp_pillars *p,pp_raw_output *out,
-                 pp_profile *prof,char *error,size_t cap) {
-    if(!m||!p||!out||!out->cls||!out->box||!out->dir) return fail(error,cap,"invalid inference arguments");
-    pp_profile local_profile;
-    if (!prof) prof = &local_profile;
-    memset(prof,0,sizeof(*prof)); double t=now_ms();
-    const float *pw,*pb;
-    if(!get2(m,"pfn.weight",64,10,&pw)||!get1(m,"pfn.bias",64,&pb)) return fail(error,cap,"invalid PFN weights");
-    float *pillar=falloc((size_t)64*p->pillar_count);
-    float *scatter=(float*)calloc((size_t)64*PP_GRID_Y*PP_GRID_X,sizeof(float));
-    size_t maxstage=(size_t)64*PP_OUT_H*PP_OUT_W;
-    float *stage0=falloc(maxstage),*stage1=falloc(maxstage);
-    size_t upn=(size_t)128*PP_OUT_H*PP_OUT_W;
-    float *up0=falloc(upn),*up1=falloc(upn),*up2=falloc(upn);
-    if(!pillar||!scatter||!stage0||!stage1||!up0||!up1||!up2){
-        free(pillar);free(scatter);free(stage0);free(stage1);free(up0);free(up1);free(up2);
-        return fail(error,cap,"workspace allocation failed");
-    }
-    prof->workspace_bytes=((size_t)64*p->pillar_count+(size_t)64*PP_GRID_Y*PP_GRID_X+2*maxstage+3*upn)*sizeof(float);
-    #pragma omp parallel for schedule(static)
-    for(int pi=0;pi<p->pillar_count;++pi) for(int oc=0;oc<64;++oc){
-        float best=0.0f;
-        for(int j=0;j<PP_MAX_POINTS;++j){
-            const float *f=p->features+((size_t)pi*PP_MAX_POINTS+j)*10;
-            float v=pb[oc]; for(int k=0;k<10;++k)v+=pw[(size_t)oc*10+k]*f[k];
-            if(v>best)best=v;
-        }
-        pillar[(size_t)oc*p->pillar_count+pi]=best;
-    }
-    prof->pfn_ms=now_ms()-t;t=now_ms();
-    #pragma omp parallel for schedule(static)
-    for(int oc=0;oc<64;++oc) for(int pi=0;pi<p->pillar_count;++pi){
-        int y=p->coords[(size_t)pi*4+2],x=p->coords[(size_t)pi*4+3];
-        scatter[((size_t)oc*PP_GRID_Y+y)*PP_GRID_X+x]=pillar[(size_t)oc*p->pillar_count+pi];
-    }
-    prof->scatter_ms=now_ms()-t;t=now_ms();
-    const conv_spec specs[]={
-      {64,64,496,432,2,"702"},{64,64,248,216,1,"705"},{64,64,248,216,1,"708"},{64,64,248,216,1,"711"},
-      {64,128,248,216,2,"714"},{128,128,124,108,1,"717"},{128,128,124,108,1,"720"},{128,128,124,108,1,"723"},{128,128,124,108,1,"726"},{128,128,124,108,1,"729"},
-      {128,256,124,108,2,"732"},{256,256,62,54,1,"735"},{256,256,62,54,1,"738"},{256,256,62,54,1,"741"},{256,256,62,54,1,"744"},{256,256,62,54,1,"747"}};
-    const float *cur=scatter;float *dst=stage0;
-    for(int i=0;i<16;++i){
-        if(!run_conv(m,&specs[i],cur,dst,error,cap))goto bad;
-        cur=dst;dst=(dst==stage0)?stage1:stage0;
-        if(i==3&&!run_deconv(m,0,cur,up0,64,248,216,1,error,cap))goto bad;
-        if(i==9&&!run_deconv(m,1,cur,up1,128,124,108,2,error,cap))goto bad;
-        if(i==15&&!run_deconv(m,2,cur,up2,256,62,54,4,error,cap))goto bad;
-    }
-    prof->backbone_ms=now_ms()-t;t=now_ms();
-    struct H{const char*n;int co;float*y;} hs[]={{"head.cls",18,out->cls},{"head.box",42,out->box},{"head.dir",12,out->dir}};
-    for(int i=0;i<3;++i){char nw[48],nb[48];const float *w,*b;snprintf(nw,sizeof nw,"%s.weight",hs[i].n);snprintf(nb,sizeof nb,"%s.bias",hs[i].n);
-      if(!get4(m,nw,hs[i].co,384,1,1,&w)||!get1(m,nb,hs[i].co,&b)){fail(error,cap,"invalid %s",hs[i].n);goto bad;}
-      head3(up0,up1,up2,hs[i].y,w,b,hs[i].co);
-    }
-    prof->heads_ms=now_ms()-t;
-    prof->total_ms=prof->pfn_ms+prof->scatter_ms+prof->backbone_ms+prof->heads_ms;
-    free(pillar);free(scatter);free(stage0);free(stage1);free(up0);free(up1);free(up2);return 1;
-bad:
-    free(pillar);free(scatter);free(stage0);free(stage1);free(up0);free(up1);free(up2);return 0;
-}
-#endif
 
 static int named3(const pp_model*m,const char*name,const float*x,float*y,int ci,int co,int h,int w,int stride,int relu,char*e,size_t cap){char nw[64],nb[64];const float*wt,*bias;snprintf(nw,sizeof nw,"%s.weight",name);snprintf(nb,sizeof nb,"%s.bias",name);if(!get4(m,nw,co,ci,3,3,&wt)||!get1(m,nb,co,&bias))return fail(e,cap,"invalid tensor %s",name);if(relu)pp_cpu_conv3_relu(x,y,wt,bias,ci,co,h,w,stride);else pp_cpu_conv3_plain(x,y,wt,bias,ci,co,h,w);return 1;}
 
-int pp_infer_cpu(const pp_model*m,const pp_pillars*p,pp_raw_output*out,pp_profile*prof,char*error,size_t cap){
- if(!m||!p||!out||!out->data)return fail(error,cap,"invalid inference arguments");
+int pp_infer_cpu(const pp_model*m,const pp_pillars*p,pp_raw_output*out,
+                 pp_cpu_workspace*workspace,pp_profile*prof,
+                 char*error,size_t cap){
+ if(!m||!p||!out||!out->data||!workspace||(!workspace->data&&workspace->floats)||p->pillar_count<0||p->pillar_count>PP_MAX_PILLARS)return fail(error,cap,"invalid inference arguments");
  pp_profile local;if(!prof)prof=&local;memset(prof,0,sizeof(*prof));double begin=now_ms(),t=begin;const float*pw,*pb;
  if(!get2(m,"pfn.weight",64,11,&pw)||!get1(m,"pfn.bias",64,&pb))return fail(error,cap,"invalid PFN weights");
+ int dense_first=getenv("PP_CPU_DENSE_FIRST")!=NULL;
+ size_t pillarn=(size_t)64*p->pillar_count,scattern=dense_first?(size_t)64*512*512:0;
  size_t stagecap=(size_t)64*256*256,upn=(size_t)128*128*128,concatn=(size_t)384*128*128,sharedn=(size_t)64*128*128;
+ size_t required=pillarn+scattern+2*stagecap+concatn+2*sharedn;
+ if(workspace->floats<required){float*grown=falloc(required);if(!grown)return fail(error,cap,"workspace allocation failed");free(workspace->data);workspace->data=grown;workspace->floats=required;}
  /* Deblock channels already have concat order: write the three results into
   * consecutive slices and feed the same allocation directly to shared. */
- float*pillar=falloc((size_t)64*p->pillar_count),*scatter=(float*)calloc((size_t)64*512*512,4),*a=falloc(stagecap),*b=falloc(stagecap),*upall=falloc(concatn),*shared=falloc(sharedn),*mid=falloc(sharedn);
- if(!pillar||!scatter||!a||!b||!upall||!shared||!mid){fail(error,cap,"workspace allocation failed");goto bad;}
+ float*pillar=workspace->data,*scatter=pillar+pillarn,*a=scatter+scattern,*b=a+stagecap,*upall=b+stagecap,*shared=upall+concatn,*mid=shared+sharedn;
+ if(dense_first)memset(scatter,0,scattern*sizeof(*scatter));
  float*up0=upall,*up1=upall+upn,*up2=upall+2*upn,*concat=upall;
- prof->workspace_bytes=((size_t)64*p->pillar_count+(size_t)64*512*512+2*stagecap+concatn+2*sharedn)*4;
+ prof->workspace_bytes=workspace->floats*sizeof(*workspace->data);
  #pragma omp parallel for schedule(static)
  for(int pi=0;pi<p->pillar_count;pi++)for(int oc=0;oc<64;oc++){float best=0;for(int j=0;j<20;j++){const float*f=p->features+((size_t)pi*20+j)*11;float v=pb[oc];for(int k=0;k<11;k++)v+=pw[(size_t)oc*11+k]*f[k];if(v>best)best=v;}pillar[(size_t)oc*p->pillar_count+pi]=best;}
  prof->pfn_ms=now_ms()-t;t=now_ms();
- #pragma omp parallel for schedule(static)
- for(int oc=0;oc<64;oc++)for(int pi=0;pi<p->pillar_count;pi++){int y=p->coords[(size_t)pi*4+2],x=p->coords[(size_t)pi*4+3];scatter[((size_t)oc*512+y)*512+x]=pillar[(size_t)oc*p->pillar_count+pi];}
+ if(dense_first){
+  #pragma omp parallel for schedule(static)
+  for(int oc=0;oc<64;oc++)for(int pi=0;pi<p->pillar_count;pi++){int y=p->coords[(size_t)pi*4+2],x=p->coords[(size_t)pi*4+3];scatter[((size_t)oc*512+y)*512+x]=pillar[(size_t)oc*p->pillar_count+pi];}
+ }
  prof->scatter_ms=now_ms()-t;t=now_ms();const int counts[3]={4,6,6},cos[3]={64,128,256};const float*cur=scatter;float*dst=a;int ci=64,h=512,w=512;
- for(int s=0;s<3;s++)for(int l=0;l<counts[s];l++){char n[40];snprintf(n,sizeof n,"backbone.%d.%d",s,l);int stride=l?1:2;if(!named3(m,n,cur,dst,ci,cos[s],h,w,stride,1,error,cap))goto bad;h=(h+stride-1)/stride;w=(w+stride-1)/stride;ci=cos[s];cur=dst;dst=dst==a?b:a;if(l==counts[s]-1){char nw[48],nb[48];const float*wt,*bias;snprintf(nw,sizeof nw,"deblock.%d.weight",s);snprintf(nb,sizeof nb,"deblock.%d.bias",s);if(s==0){if(!get4(m,nw,128,64,2,2,&wt)||!get1(m,nb,128,&bias)){fail(error,cap,"invalid deblock 0");goto bad;}conv2s2_relu(cur,up0,wt,bias,64,128,256,256);}else{int k=s==1?1:2,ici=s==1?128:256;float*u=s==1?up1:up2;if(!get4(m,nw,ici,128,k,k,&wt)||!get1(m,nb,128,&bias)){fail(error,cap,"invalid deblock %d",s);goto bad;}deconv_relu(cur,u,wt,bias,ici,h,w,k);}}}
+ for(int s=0;s<3;s++)for(int l=0;l<counts[s];l++){char n[40];snprintf(n,sizeof n,"backbone.%d.%d",s,l);int stride=l?1:2;if(s==0&&l==0&&!dense_first){if(!sparse_first_conv(m,p,pillar,dst,error,cap))goto bad;}else if(!named3(m,n,cur,dst,ci,cos[s],h,w,stride,1,error,cap))goto bad;h=(h+stride-1)/stride;w=(w+stride-1)/stride;ci=cos[s];cur=dst;dst=dst==a?b:a;if(l==counts[s]-1){char nw[48],nb[48];const float*wt,*bias;snprintf(nw,sizeof nw,"deblock.%d.weight",s);snprintf(nb,sizeof nb,"deblock.%d.bias",s);if(s==0){if(!get4(m,nw,128,64,2,2,&wt)||!get1(m,nb,128,&bias)){fail(error,cap,"invalid deblock 0");goto bad;}conv2s2_relu(cur,up0,wt,bias,64,128,256,256);}else{int k=s==1?1:2,ici=s==1?128:256;float*u=s==1?up1:up2;if(!get4(m,nw,ici,128,k,k,&wt)||!get1(m,nb,128,&bias)){fail(error,cap,"invalid deblock %d",s);goto bad;}deconv_relu(cur,u,wt,bias,ici,h,w,k);}}}
  prof->backbone_ms=now_ms()-t;t=now_ms();if(!named3(m,"shared",concat,shared,384,64,128,128,1,1,error,cap))goto bad;
  static const char*branch[6]={"cls","reg","height","size","angle","velo"};
  for(int hd=0;hd<6;hd++)for(int br=0;br<6;br++){char n[48];snprintf(n,sizeof n,"head.%d.%s.mid",hd,branch[br]);if(!named3(m,n,shared,mid,64,64,128,128,1,1,error,cap))goto bad;snprintf(n,sizeof n,"head.%d.%s.out",hd,branch[br]);int co=pp_branch_channels(hd,br);if(!named3(m,n,mid,pp_output_branch(out,hd,br),64,co,128,128,1,0,error,cap))goto bad;}
  prof->heads_ms=now_ms()-t;prof->total_ms=now_ms()-begin;
-#ifdef PP_WITH_GGML
- prof->workspace_bytes+=pp_ggml_workspace_bytes();
-#endif
 #ifdef PP_WITH_ACCELERATE
  prof->workspace_bytes+=pp_apple_cache_bytes();
 #endif
- free(pillar);free(scatter);free(a);free(b);free(upall);free(shared);free(mid);return 1;
-bad:free(pillar);free(scatter);free(a);free(b);free(upall);free(shared);free(mid);return 0;
+ return 1;
+bad:return 0;
 }

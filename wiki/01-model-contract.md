@@ -30,12 +30,15 @@ The maximum feature arena is `30,000 × 20 × 11 × 4 B = 25.18 MiB`. That is ca
 
 ## Network shape map
 
-The PFN maps each point's 11 values to 64 channels and max-reduces the 20 point slots. Scatter writes those `64 × P` values into an NCHW canvas of `64 × 512 × 512`, which is exactly 64 MiB.
+The PFN maps each point's 11 values to 64 channels and max-reduces the 20 point
+slots. The CPU backend feeds those `64 × P` live values directly into the first
+convolution through the voxel grid map; CUDA materializes the equivalent
+`64 × 512 × 512` NCHW canvas.
 
 | Stage | Layers | Output | Notes |
 |---|---:|---|---|
 | PFN | linear + folded BN + ReLU + max | `P × 64` | `P ≤ 30,000` |
-| Scatter | sparse assignment | `64 × 512 × 512` | NCHW fp32 |
+| Sparse BEV input | direct grid lookup / scatter | `64 × P` CPU, `64 × 512 × 512` CUDA | absent cells are zero |
 | Backbone 0 | stride 2 + 3 stride-1 convs | `64 × 256 × 256` | 4 convolutions |
 | Backbone 1 | stride 2 + 5 stride-1 convs | `128 × 128 × 128` | 6 convolutions |
 | Backbone 2 | stride 2 + 5 stride-1 convs | `256 × 64 × 64` | 6 convolutions |
@@ -74,7 +77,9 @@ The class order and anchor sizes are frozen in [`src/decode.c`](../src/decode.c)
 - renames 190 tensors into stable runtime names;
 - emits contiguous little-endian fp32 arrays with 64-byte alignment and CRC32.
 
-The runtime therefore executes convolution, activation, max reduction, scatter, decode, and NMS. It does not need YAML parsing, PyTorch, BatchNorm state, or plugin dispatch in the hot path.
+The runtime therefore executes convolution, activation, max reduction, sparse
+BEV input or scatter, decode, and NMS. It does not need YAML parsing, PyTorch,
+BatchNorm state, or plugin dispatch in the hot path.
 
 ## What to remember
 

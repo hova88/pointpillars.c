@@ -31,15 +31,18 @@ static int test_terminal_session(void) {
         struct termios after;
         pp_tui_state state;
         if (tcgetattr(STDIN_FILENO, &before) || !pp_tui_begin(&state)) _exit(20);
-        int action = pp_tui_poll(&state, 3000);
+        int action;
+        do action = pp_tui_poll(&state, 3000); while (action == PP_TUI_NONE);
+        if (action != PP_TUI_NEXT) _exit(22);
+        do action = pp_tui_poll(&state, 3000); while (action == PP_TUI_NONE);
         pp_tui_end();
         if (tcgetattr(STDIN_FILENO, &after) || !same_termios(&before, &after)) _exit(21);
-        _exit(action == PP_TUI_QUIT ? 0 : 22);
+        _exit(action == PP_TUI_QUIT ? 0 : 23);
     }
 
     char transcript[4096];
     size_t length = 0;
-    int sent_quit = 0;
+    int input_stage = 0;
     for (int attempt = 0; attempt < 40; ++attempt) {
         struct pollfd descriptor = {master, POLLIN, 0};
         int ready = poll(&descriptor, 1, 100);
@@ -53,9 +56,12 @@ static int test_terminal_session(void) {
                 break;
             }
         }
-        if (!sent_quit && length && strstr(transcript, "\033[?1049h")) {
-            if (write(master, "q", 1) != 1) break;
-            sent_quit = 1;
+        if (!input_stage && length && strstr(transcript, "\033[?1049h")) {
+            if (write(master, "\033", 1) != 1) break;
+            input_stage = 1;
+        } else if (input_stage == 1) {
+            if (write(master, "[Cq", 3) != 3) break;
+            input_stage = 2;
         }
         int status = 0;
         pid_t result = waitpid(child, &status, WNOHANG);
@@ -68,7 +74,7 @@ static int test_terminal_session(void) {
                 transcript[length] = '\0';
             }
             close(master);
-            return sent_quit && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+            return input_stage == 2 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
                    strstr(transcript, "\033[?25l") &&
                    strstr(transcript, "\033[0m\033[?25h\033[?1049l");
         }
@@ -126,7 +132,7 @@ int main(void) {
     pp_tui_state_init(&state);
     if (!state.show_points || !state.show_boxes || !state.show_velocity ||
         !state.show_grid || !state.show_tracks || state.class_mask != 0x3ffu ||
-        !state.animate_points || !state.perspective || state.show_sidebar ||
+        !state.perspective || state.show_sidebar ||
         state.zoom != 1.0f) return 2;
     pp_tui_update_tracks(&state, &detections, 0);
     if (state.track_count != 2 || state.tracks[0].length != 1) return 3;
@@ -147,12 +153,13 @@ int main(void) {
     if (!validate_layout(&wide, 120, 40) ||
         !strstr(wide.data, "POINTPILLARS") ||
         !strstr(wide.data, "LIVE LIDAR") ||
-        !strstr(wide.data, "SWEEP FLOW") ||
+        !strstr(wide.data, "3D LIDAR") ||
+        strstr(wide.data, "SWEEP FLOW") ||
         strstr(wide.data, "SCENE OBJECTS") ||
         !strstr(wide.data, "\342\240")) {
-        fprintf(stderr, "wide TUI fixture: layout=%d title=%d lidar=%d flow=%d sidebar=%d braille=%d\n",
+        fprintf(stderr, "wide TUI fixture: layout=%d title=%d lidar=%d static=%d sidebar=%d braille=%d\n",
                 validate_layout(&wide, 120, 40), !!strstr(wide.data, "POINTPILLARS"),
-                !!strstr(wide.data, "LIVE LIDAR"), !!strstr(wide.data, "SWEEP FLOW"),
+                !!strstr(wide.data, "LIVE LIDAR"), !strstr(wide.data, "SWEEP FLOW"),
                 !!strstr(wide.data, "SCENE OBJECTS"), !!strstr(wide.data, "\342\240"));
         return 7;
     }
@@ -162,29 +169,7 @@ int main(void) {
         return 9;
     pp_tui_frame_free(&repeat);
 
-    pp_tui_advance_animation(&state);
-    pp_tui_frame animated = {0};
-    if (!pp_tui_compose(points, 4, 5, &detections, 6, 404, 12.16,
-                        "cuDNN FP32", &state, 120, 40, &animated)) return 17;
-    if (wide.length == animated.length &&
-        !memcmp(wide.data, animated.data, wide.length)) return 18;
-    pp_tui_frame_free(&animated);
     pp_tui_frame_free(&wide);
-
-    state.animate_points = 0;
-    pp_tui_frame static_a = {0};
-    pp_tui_frame static_b = {0};
-    if (!pp_tui_compose(points, 4, 5, &detections, 6, 404, 12.16,
-                        "cuDNN FP32", &state, 120, 40, &static_a)) return 20;
-    unsigned tick = state.animation_tick;
-    pp_tui_advance_animation(&state);
-    if (state.animation_tick != tick ||
-        !pp_tui_compose(points, 4, 5, &detections, 6, 404, 12.16,
-                        "cuDNN FP32", &state, 120, 40, &static_b) ||
-        static_a.length != static_b.length ||
-        memcmp(static_a.data, static_b.data, static_a.length)) return 21;
-    pp_tui_frame_free(&static_a);
-    pp_tui_frame_free(&static_b);
 
     float height_a[] = {8, 2, 1, 1, 0};
     float height_b[] = {8, 2, 2, 1, 0};
@@ -224,7 +209,6 @@ int main(void) {
     pp_tui_frame_free(&sparse_density);
     pp_tui_frame_free(&high_density);
     state.show_grid = 1;
-    state.animate_points = 1;
 
     state.show_sidebar = 1;
     pp_tui_frame inspector = {0};
@@ -274,6 +258,11 @@ int main(void) {
     for (size_t frame = 1; frame <= 4; ++frame)
         pp_tui_update_tracks(&state, &detections, frame);
     if (state.track_count) return 16;
-    puts("tui terminal, compose, and tracks: ok");
+    pp_tui_state_init(&state);
+    memcpy(state.input, "wn", 2);
+    state.input_length = 2;
+    if (pp_tui_poll(&state, 0) != PP_TUI_REDRAW || state.center_x != 5.0f ||
+        pp_tui_poll(&state, 0) != PP_TUI_NEXT || state.input_length) return 17;
+    puts("tui terminal, input queue, compose, and tracks: ok");
     return 0;
 }

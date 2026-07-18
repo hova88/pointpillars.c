@@ -24,7 +24,6 @@ after conversion. The macOS build automatically:
 - compiles `src/infer_apple.c` behind `PP_WITH_ACCELERATE`;
 - uses `<util.h>` for the PTY test and exposes `SIGWINCH` through Darwin's
   feature set;
-- uses `@loader_path` and libc++ for the optional GGML target.
 
 No Homebrew compiler or `libomp` is required for the default path. BNNS manages
 its own optimized execution and scheduling.
@@ -66,6 +65,10 @@ reference, and `PP_APPLE_DECONV_DISABLE=1` isolates the deblock acceleration.
 
 ## Measured M2 result
 
+These archived numbers use the materialized-scatter topology now selected by
+`PP_CPU_DENSE_FIRST=1`. The current direct sparse first layer has not been
+remeasured on this machine, so this table is not a claim about today's default.
+
 The controlled fixture contains 24,000 points in 7,881 live pillars. Reports
 use the raw 3,866,624-float output boundary.
 
@@ -81,17 +84,16 @@ class sequence. Maximum decoded field differences were `8.64e-7` for score,
 `4.77e-6` for dimensions, and `3.20e-5` for yaw.
 
 These values are evidence for this synthetic regression fixture, not a nuScenes
-throughput or task-accuracy claim. Use prepared real frames and the official
-evaluation workflow before publishing dataset results.
+throughput or task-accuracy claim. Use prepared real frames and the checkpoint
+oracle before publishing runtime-equivalence claims.
 
 ## Real nuScenes mini follow-up
 
-The complete local audit also measures a real 265,562-point ten-sweep frame
+The same dense-first audit also measures a real 265,562-point ten-sweep frame
 with 28,517 live pillars. On the same 8-core Apple M2, 19 warm calls have a
 `302.983 ms` median and `315.578 ms` p95. The checkpoint oracle passes at
 `8.96e-4` maximum and `9.89e-6` mean absolute error. CPU batch completes all
-404 mini keyframes, and official `mini_val` evaluation reproduces mAP `0.2055`
-and NDS `0.3280`.
+404 mini keyframes without runtime errors.
 
 See [the complete local run](13-local-macos-nuscenes-mini.md) for archive
 placement on macOS, data invariants, command coverage, artifact hashes, and the

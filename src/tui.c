@@ -3,11 +3,11 @@
 #include "pp_tui.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +24,6 @@ enum {
     PIX_POINT_GROUND,
     PIX_POINT_LOW,
     PIX_POINT_HIGH,
-    PIX_POINT_FLOW,
     PIX_TRACK_BASE = 10,
     PIX_VELOCITY_BASE = 20,
     PIX_BOX_BASE = 30,
@@ -190,7 +189,6 @@ void pp_tui_state_init(pp_tui_state *state) {
     state->show_velocity = 1;
     state->show_grid = 1;
     state->show_tracks = 1;
-    state->animate_points = 1;
     state->perspective = 1;
     state->class_mask = 0x3ffu;
     state->score_threshold = 0.2f;
@@ -226,41 +224,66 @@ void pp_tui_end(void) {
     restore_terminal();
 }
 
-static int is_arrow(const unsigned char *key, ssize_t count, unsigned char code) {
-    return count >= 3 && key[0] == 27 && key[1] == '[' && key[2] == code;
+static void consume_input(pp_tui_state *state, size_t count) {
+    state->input_length -= count;
+    memmove(state->input, state->input + count, state->input_length);
+}
+
+static int incomplete_escape(const pp_tui_state *state) {
+    return state->input_length && state->input[0] == 27 &&
+        (state->input_length == 1 ||
+         (state->input_length == 2 && state->input[1] == '['));
 }
 
 int pp_tui_poll(pp_tui_state *state, int timeout_ms) {
+    if (!state) return PP_TUI_QUIT;
     if (caught_signal) return PP_TUI_QUIT;
     if (resize_pending) {
         resize_pending = 0;
         return PP_TUI_REDRAW;
     }
-    struct pollfd descriptor = {STDIN_FILENO, POLLIN, 0};
-    int result;
-    do {
-        result = poll(&descriptor, 1, timeout_ms);
-    } while (result < 0 && errno == EINTR && !caught_signal && !resize_pending);
-    if (caught_signal) return PP_TUI_QUIT;
-    if (resize_pending) {
-        resize_pending = 0;
-        return PP_TUI_REDRAW;
+    if (!state->input_length || incomplete_escape(state)) {
+        struct pollfd descriptor = {STDIN_FILENO, POLLIN, 0};
+        int result;
+        do {
+            result = poll(&descriptor, 1, timeout_ms);
+        } while (result < 0 && errno == EINTR && !caught_signal && !resize_pending);
+        if (caught_signal) return PP_TUI_QUIT;
+        if (resize_pending) {
+            resize_pending = 0;
+            return PP_TUI_REDRAW;
+        }
+        if (result <= 0 || !(descriptor.revents & POLLIN)) {
+            if (incomplete_escape(state)) state->input_length = 0;
+            return PP_TUI_NONE;
+        }
+        size_t available = sizeof(state->input) - state->input_length;
+        if (!available) consume_input(state, 1);
+        available = sizeof(state->input) - state->input_length;
+        ssize_t count = read(STDIN_FILENO, state->input + state->input_length,
+                             available);
+        if (count <= 0) return PP_TUI_NONE;
+        state->input_length += (size_t)count;
     }
-    if (result <= 0 || !(descriptor.revents & POLLIN)) return PP_TUI_NONE;
-    unsigned char key[8];
-    ssize_t count = read(STDIN_FILENO, key, sizeof(key));
-    if (count <= 0) return PP_TUI_NONE;
-    unsigned char value = key[0];
+    if (incomplete_escape(state)) return PP_TUI_NONE;
+    unsigned char value = state->input[0];
+    unsigned char arrow = 0;
+    if (value == 27 && state->input_length >= 3 && state->input[1] == '[') {
+        arrow = state->input[2];
+        consume_input(state, 3);
+    } else {
+        consume_input(state, 1);
+    }
     if (value == 3 || value == 'q' || value == 'Q') return PP_TUI_QUIT;
     if (value == ' ') {
         state->paused = !state->paused;
         return PP_TUI_REDRAW;
     }
-    if (value == 'n' || value == 'N' || is_arrow(key, count, 'C')) return PP_TUI_NEXT;
-    if (value == 'p' || value == 'P' || is_arrow(key, count, 'D')) return PP_TUI_PREV;
+    if (value == 'n' || value == 'N' || arrow == 'C') return PP_TUI_NEXT;
+    if (value == 'p' || value == 'P' || arrow == 'D') return PP_TUI_PREV;
     float pan = 5.0f / state->zoom;
-    if (value == 'w' || is_arrow(key, count, 'A')) state->center_x += pan;
-    else if (value == 's' || is_arrow(key, count, 'B')) state->center_x -= pan;
+    if (value == 'w' || arrow == 'A') state->center_x += pan;
+    else if (value == 's' || arrow == 'B') state->center_x -= pan;
     else if (value == 'a') state->center_y += pan;
     else if (value == 'd') state->center_y -= pan;
     else if (value == 'e') state->yaw += 0.1308997f;
@@ -274,7 +297,6 @@ int pp_tui_poll(pp_tui_state *state, int timeout_ms) {
     else if (value == 'v' || value == 'V') state->show_velocity = !state->show_velocity;
     else if (value == 'g' || value == 'G') state->show_grid = !state->show_grid;
     else if (value == 't' || value == 'T') state->show_tracks = !state->show_tracks;
-    else if (value == 'f' || value == 'F') state->animate_points = !state->animate_points;
     else if (value == 'i' || value == 'I') state->show_sidebar = !state->show_sidebar;
     else if (value == 'm' || value == 'M') state->perspective = !state->perspective;
     else if (value == 'h' || value == 'H' || value == '?') {
@@ -295,10 +317,6 @@ int pp_tui_poll(pp_tui_state *state, int timeout_ms) {
     return PP_TUI_REDRAW;
 }
 
-void pp_tui_advance_animation(pp_tui_state *state) {
-    if (state && state->animate_points) ++state->animation_tick;
-}
-
 static void plot(unsigned char *pixels, int width, int height,
                  int x, int y, unsigned char value) {
     if ((unsigned)x >= (unsigned)width || (unsigned)y >= (unsigned)height) return;
@@ -306,12 +324,12 @@ static void plot(unsigned char *pixels, int width, int height,
     if (pixels[index] < value) pixels[index] = value;
 }
 
-static void plot_point(unsigned char *pixels, uint32_t *density,
+static void plot_point(unsigned char *pixels, unsigned char *density,
                        int width, int height, int x, int y,
                        unsigned char value) {
     if ((unsigned)x >= (unsigned)width || (unsigned)y >= (unsigned)height) return;
     size_t index = (size_t)y * (size_t)width + (size_t)x;
-    ++density[index];
+    if (density[index] != UCHAR_MAX) ++density[index];
     if (pixels[index] < value) pixels[index] = value;
 }
 
@@ -388,8 +406,6 @@ static void encode_braille(unsigned codepoint, char text[4]) {
 typedef struct {
     const pp_tui_state *state;
     float cosine, sine;
-    float scan_cosine, scan_sine;
-    float sweep;
 } projection;
 
 static void project3(float x, float y, float z, const projection *view,
@@ -613,39 +629,26 @@ static void draw_box(unsigned char *pixels, int width, int height,
     draw_line(pixels, width, height, center_x, center_y, nose_x, nose_y, ink);
 }
 
-static unsigned char point_ink(const float *point, size_t stride,
-                               const projection *view) {
+static unsigned char point_ink(const float *point, size_t stride) {
     float intensity = stride >= 4 ? fmaxf(0.0f, fminf(1.0f, point[3])) : 1.0f;
     float lag = stride >= 5 ? fmaxf(0.0f, fminf(1.0f, point[4])) : 0.0f;
-    float along = point[0] * view->scan_cosine + point[1] * view->scan_sine;
-    float across = point[0] * view->scan_sine - point[1] * view->scan_cosine;
-    int in_scan_wedge = along > 0.0f &&
-        across * across < 0.010067f * along * along;
-    int flow = view->state->animate_points &&
-        (in_scan_wedge || fabsf(lag - view->sweep) < 0.035f);
-    if (flow) return PIX_POINT_FLOW;
     if (lag > 0.55f) return PIX_POINT_OLD;
     if (lag > 0.15f || intensity < 0.08f) return PIX_POINT_MID;
     return point[2] < -1.0f ? PIX_POINT_GROUND :
            point[2] < 0.75f ? PIX_POINT_LOW : PIX_POINT_HIGH;
 }
 
-static void draw_scene(unsigned char *pixels, uint32_t *density,
+static void draw_scene(unsigned char *pixels, unsigned char *density,
                        int width, int height,
                        const float *points, size_t count, size_t stride,
                        const pp_detections *detections, int selected,
                        const pp_tui_state *state) {
-    float animated_yaw = state->perspective && state->animate_points ?
-        0.045f * sinf((float)state->animation_tick * 0.055f) : 0.0f;
-    float scan = (float)state->animation_tick * 0.22f;
-    projection view = {state, cosf(state->yaw + animated_yaw),
-                       sinf(state->yaw + animated_yaw), cosf(scan), sinf(scan),
-                       fmodf((float)state->animation_tick * 0.045f, 1.0f)};
+    projection view = {state, cosf(state->yaw), sinf(state->yaw)};
     if (state->show_grid) draw_grid(pixels, width, height, &view);
     if (state->show_points) {
         for (size_t index = 0; index < count; ++index) {
             const float *point = points + index * stride;
-            unsigned char ink = point_ink(point, stride, &view);
+            unsigned char ink = point_ink(point, stride);
             int x;
             int y;
             project3(point[0], point[1], point[2], &view, width, height, &x, &y);
@@ -727,9 +730,6 @@ static void set_pixel_style(text_buffer *buffer, int kind, int density_grade) {
         mode = 2;
     } else if (kind == PIX_POINT_HIGH) {
         color = 118;
-    } else if (kind == PIX_POINT_FLOW) {
-        color = 87;
-        mode = 1;
     } else if (kind >= PIX_TRACK_BASE && kind < PIX_VELOCITY_BASE) {
         color = class_color[kind - PIX_TRACK_BASE];
         mode = 2;
@@ -745,15 +745,14 @@ static void set_pixel_style(text_buffer *buffer, int kind, int density_grade) {
         color = 214;
         mode = 1;
     }
-    if (kind >= PIX_POINT_OLD && kind <= PIX_POINT_FLOW) {
+    if (kind >= PIX_POINT_OLD && kind <= PIX_POINT_HIGH) {
         mode = density_grade <= 1 ? 2 : density_grade == 2 ? 0 : 1;
-        if (kind == PIX_POINT_FLOW && mode < 1) mode = 1;
     }
     buffer_printf(buffer, "\033[%d;38;5;%d;48;5;233m", mode, color);
 }
 
 static void render_braille_row(text_buffer *buffer, const unsigned char *pixels,
-                                const uint32_t *density,
+                                const unsigned char *density,
                                 int pixel_width, int character_row,
                                 int character_width) {
     static const int dot[4][2] = {{1, 8}, {2, 16}, {4, 32}, {64, 128}};
@@ -761,7 +760,7 @@ static void render_braille_row(text_buffer *buffer, const unsigned char *pixels,
     for (int column = 0; column < character_width; ++column) {
         int mask = 0;
         int kind = 0;
-        size_t density_total = 0;
+        unsigned density_total = 0;
         for (int y = 0; y < 4; ++y) {
             for (int x = 0; x < 2; ++x) {
                 size_t index =
@@ -774,7 +773,7 @@ static void render_braille_row(text_buffer *buffer, const unsigned char *pixels,
             }
         }
         int grade = density_total <= 2 ? 1 : density_total <= 8 ? 2 : 3;
-        if (kind < PIX_POINT_OLD || kind > PIX_POINT_FLOW) grade = 0;
+        if (kind < PIX_POINT_OLD || kind > PIX_POINT_HIGH) grade = 0;
         int style = kind * 4 + grade;
         if (style != previous_style) {
             set_pixel_style(buffer, kind, grade);
@@ -880,7 +879,7 @@ static void append_side(text_buffer *buffer, int row, int width,
             "  z / e      rotate", "  + / -      zoom",
             "  [ / ]      select object", "  , / .      score gate",
             "  0–9 / c    classes / all", "  l b v g t  scene layers",
-            "  f / i      flow / inspector", "  m          3D / BEV mode",
+            "  i          toggle inspector", "  m          3D / BEV mode",
             "  r          reset camera",
             "  h / ?      close help",
             "  q          quit", "", "  Changes redraw instantly;",
@@ -962,13 +961,8 @@ static void append_side(text_buffer *buffer, int row, int width,
 
 static void append_canvas_border(text_buffer *buffer, int width, int top,
                                  const pp_tui_state *state) {
-    const char *title;
-    if (state->perspective)
-        title = state->animate_points ? " 3D LIDAR · SWEEP FLOW · HEIGHT + AGE " :
-                                       " 3D LIDAR · HEIGHT + INTENSITY ";
-    else
-        title = state->animate_points ? " BEV · SWEEP FLOW · 10 m RINGS " :
-                                       " BEV · 10 m RANGE RINGS ";
+    const char *title = state->perspective ?
+        " 3D LIDAR · HEIGHT + AGE " : " BEV · 10 m RANGE RINGS ";
     int title_width = text_cells(title);
     buffer_puts(buffer, "\033[2;38;5;240;48;5;233m");
     buffer_puts(buffer, top ? "╭" : "╰");
@@ -988,18 +982,17 @@ static void append_footer(text_buffer *buffer, int columns,
                           const pp_tui_state *state) {
     char view[512];
     snprintf(view, sizeof(view),
-             " VIEW  %s  ·  center %+.1f %+.1f m  ·  zoom %.2fx  ·  yaw %+.0f°  ·  score ≥ %.2f  ·  %s  ·  layers %c %c %c %c %c",
+             " VIEW  %s  ·  center %+.1f %+.1f m  ·  zoom %.2fx  ·  yaw %+.0f°  ·  score ≥ %.2f  ·  layers %c %c %c %c %c",
              state->perspective ? "3D" : "BEV",
              state->center_x, state->center_y, state->zoom,
              state->yaw * 57.2957795f, state->score_threshold,
-             state->animate_points ? "FLOW" : "STATIC",
              state->show_points ? 'P' : '-', state->show_boxes ? 'B' : '-',
              state->show_velocity ? 'V' : '-', state->show_grid ? 'G' : '-',
              state->show_tracks ? 'T' : '-');
     append_plain_line(buffer, "\033[38;5;246;48;5;233m", view, columns, 1);
     const char *controls = state->show_help ?
         " h / ? close help   ·   Space play / pause   ·   ← / → frames   ·   q quit" :
-        " Space pause  ·  ← / → frames  ·  WASD move  ·  m 3D/BEV  ·  f flow  ·  i inspector  ·  h help  ·  q quit";
+        " Space pause  ·  ← / → frames  ·  WASD move  ·  m 3D/BEV  ·  i inspector  ·  h help  ·  q quit";
     append_plain_line(buffer, "\033[38;5;252;48;5;233m", controls, columns, 0);
 }
 
@@ -1060,7 +1053,7 @@ int pp_tui_compose(const float *points, size_t count, size_t stride,
     int pixel_height = canvas_height * 4;
     size_t pixel_count = (size_t)pixel_width * (size_t)pixel_height;
     unsigned char *pixels = (unsigned char *)calloc(pixel_count, 1);
-    uint32_t *density = (uint32_t *)calloc(pixel_count, sizeof(*density));
+    unsigned char *density = (unsigned char *)calloc(pixel_count, 1);
     if (!pixels || !density) {
         free(density);
         free(pixels);

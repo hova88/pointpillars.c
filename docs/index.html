@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A visual systems walkthrough of PointPillars.c: model shapes, operators, locality, performance, and correctness.">
+  <title>PointPillars.c — From points to 3D boxes</title>
+  <link rel="stylesheet" href="site.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top"><img src="pointpillars-mark.svg" width="30" alt=""><span>PointPillars.c</span></a>
+    <nav aria-label="Article"><a href="#pipeline">Pipeline</a><a href="#model">Model</a><a href="#performance">Performance</a><a href="#correctness">Correctness</a><a href="#build">Build</a><a class="source" href="https://github.com/hova88/pointpillars.c">Source ↗</a></nav>
+  </header>
+
+  <main id="top"><article>
+    <header class="hero">
+      <p class="eyebrow">A visual systems walkthrough</p>
+      <h1>Turn a point cloud <br>into upright compute.</h1>
+      <p class="dek">PointPillars groups irregular LiDAR returns into vertical columns, learns one vector per live pillar, and spends the rest of inference on a regular bird’s-eye-view CNN. This small C11 runtime makes every shape, byte, and fallback visible.</p>
+      <div class="hero-meta"><span>23.19 MiB model</span><span>66.786 GMAC</span><span>12.313 ms warm¹</span><span>109 boxes²</span></div>
+      <svg class="wide hero-visual" viewBox="0 0 920 350" role="img" aria-labelledby="hero-title">
+        <title id="hero-title">LiDAR points form vertical pillars and a bird's-eye-view detection grid</title>
+        <defs><pattern id="hero-grid" width="18" height="18" patternUnits="userSpaceOnUse"><path d="M18 0H0V18" fill="none" stroke="#dce3eb"/></pattern><marker id="hero-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0l8 4-8 4z" fill="#6a7887"/></marker></defs>
+        <g class="cloud" transform="translate(20 35)"><path d="M15 258h235M132 10v270"/><g id="hero-points"><circle cx="30" cy="193" r="3"/><circle cx="48" cy="145" r="2"/><circle cx="72" cy="218" r="3"/><circle cx="91" cy="82" r="2"/><circle cx="111" cy="169" r="3"/><circle cx="142" cy="112" r="2"/><circle cx="155" cy="231" r="3"/><circle cx="180" cy="61" r="3"/><circle cx="201" cy="148" r="2"/><circle cx="220" cy="206" r="3"/><circle cx="237" cy="98" r="2"/></g><text x="18" y="20">ten sweeps · [N,5]</text></g>
+        <path class="flow" d="M278 178h62" marker-end="url(#hero-arrow)"/>
+        <g class="pillars" transform="translate(350 62)"><path class="floor" d="M0 238l112 45 143-58-112-42z"/><g transform="translate(28 147)"><path d="M0 0l25 10v-80L0-80z"/><path d="M25 10l28-11v-80L25-70z"/><path d="M0-80l25 10 28-11-25-10z"/></g><g transform="translate(97 187)"><path d="M0 0l25 10v-130L0-130z"/><path d="M25 10l28-11v-130L25-120z"/><path d="M0-130l25 10 28-11-25-10z"/></g><g transform="translate(164 159)"><path d="M0 0l25 10v-58L0-58z"/><path d="M25 10l28-11v-58L25-48z"/><path d="M0-58l25 10 28-11-25-10z"/></g><text x="30" y="20">live pillars · [P,20,11]</text></g>
+        <path class="flow" d="M618 178h55" marker-end="url(#hero-arrow)"/>
+        <g transform="translate(687 28)"><rect class="bev" width="205" height="290" rx="7" fill="url(#hero-grid)"/><path class="road" d="M72 290c20-90 22-183 7-290M135 290c-3-95 5-191 27-290"/><g class="boxes"><rect x="52" y="204" width="27" height="48" transform="rotate(-12 65 228)"/><rect x="129" y="117" width="25" height="47" transform="rotate(7 141 140)"/><rect x="87" y="59" width="17" height="30" transform="rotate(-22 95 74)"/></g><circle class="ego" cx="103" cy="261" r="6"/><text x="14" y="24">metric BEV · 3D boxes</text></g>
+      </svg>
+      <p class="caption">The network does not learn on raw point order. It first creates a bounded sparse table, then changes representation exactly once for dense convolution.</p>
+    </header>
+
+    <section>
+      <p class="section-number">01 — The idea</p><h2>Why pillars, not voxels?</h2>
+      <p>A full 3D voxel grid spends memory on empty height slices. PointPillars collapses the entire configured height range into one vertical cell. Every accepted point receives its absolute features, an offset from its pillar mean, and an offset from the pillar center. A tiny PFN max-reduces those rows into one 64-channel vector.</p>
+      <div class="definition"><strong>pillar</strong><span>A 0.2 × 0.2 × 8.0 m vertical cell. The reference frame has 7,854 live pillars inside a possible 512 × 512 ground grid—about 3% occupancy.</span></div>
+      <div class="pillar-explainer">
+        <div class="mini-cloud"><i style="--x:18%;--y:28%"></i><i style="--x:54%;--y:18%"></i><i style="--x:68%;--y:58%"></i><i style="--x:31%;--y:73%"></i><small>unordered returns</small></div><b>stable grouping →</b>
+        <div class="mini-grid"><i></i><i class="live"></i><i></i><i class="live"></i><i></i><i></i><i></i><i class="live"></i><i></i><small>direct 1 MiB grid index</small></div><b>PFN max →</b>
+        <div class="feature-bars"><i style="--h:44%"></i><i style="--h:79%"></i><i style="--h:31%"></i><i style="--h:61%"></i><i style="--h:92%"></i><i style="--h:52%"></i><small>one 64-D vector / pillar</small></div>
+      </div>
+    </section>
+
+    <section id="pipeline">
+      <p class="section-number">02 — Tensor pipe</p><h2>Follow one frame through twelve contracts.</h2>
+      <p>Select a stage to inspect its output shape and the representation decision made there. These activation shapes come from the specialized C runtime, not from guessing at checkpoint names.</p>
+      <div class="tensor-layout"><div class="flow-rail" id="flow-rail" aria-label="PointPillars activation flow"></div><div class="tensor-card" aria-live="polite"><span class="eyebrow" id="flow-index">01 / 12</span><h3 id="flow-name">Ten-sweep points</h3><code id="flow-shape">float32 [N, 5]</code><p id="flow-note">x, y, z, intensity, time lag</p></div></div>
+    </section>
+
+    <section id="model">
+      <p class="section-number">03 — Frozen model explorer</p><h2>Ninety-three learned operators, no graph interpreter.</h2>
+      <p>The exporter folds BatchNorm and writes 190 checked fp32 tensors into a 23.19 MiB PPW mapping. The browser below reads the same generated inventory: filter by network group, search a module, then open its stored weight and bias shapes.</p>
+      <div class="model-stats"><span><b id="stat-tensors">190</b>stored tensors</span><span><b id="stat-modules">97</b>grouped entries</span><span><b id="stat-operators">93</b>learned operators</span><span><b id="stat-elements">6.07 M</b>elements</span></div>
+      <div class="operator-composition" id="operator-composition" aria-label="Operator composition"></div>
+      <div class="model-browser">
+        <div class="browser-controls"><div class="group-filters" id="group-filters"></div><label><span>Search</span><input id="module-search" type="search" placeholder="head.4.angle, deblock…" autocomplete="off"></label></div>
+        <div class="browser-summary" id="browser-summary"></div><div class="module-list" id="module-list"></div><p id="module-empty" hidden>No stored entry matches this filter.</p>
+      </div>
+      <p class="caption">Runtime-only operators—pillar grouping, sparse lookup/scatter, ReLU, max reduction, aliasing, decode, and rotated NMS—remain visible in the tensor pipe even though they own no learned tensor. The complete <a href="model-summary.md">Markdown model summary</a> is readable without JavaScript.</p>
+    </section>
+
+    <section>
+      <p class="section-number">04 — Locality</p><h2>Sparse on CPU, dense on GPU.</h2>
+      <p>The first convolution is the representation hinge. A CPU can query only live cells through the voxel grid and never create the 64 MiB canvas. A GPU benefits from coalesced dense NCHW traffic, so it clears and scatters that canvas before the CNN.</p>
+      <div class="locality">
+        <article><span>CPU · direct sparse first layer</span><div class="cache-lines"><i></i><i class="hot"></i><i></i><i></i><i class="hot"></i><i></i><i class="hot"></i><i></i></div><strong>65.92 MiB</strong><p>Live pillar rows are compact; the 1 MiB grid supplies absent-cell zeros. No 64 MiB scatter allocation.</p></article>
+        <div class="versus">vs</div>
+        <article><span>CUDA · materialized NCHW</span><div class="dense-canvas"><i></i><i></i><i></i><i></i></div><strong>64 MiB scatter</strong><p>One asynchronous clear plus coalesced scatter buys regular convolution and persistent device residency.</p></article>
+      </div>
+      <p class="caption">The right representation depends on the consumer. “Sparse everywhere” and “dense everywhere” are both weaker rules than measuring the boundary.</p>
+    </section>
+
+    <section id="performance">
+      <p class="section-number">05 — Performance</p><h2>Cold startup and warm throughput are different questions.</h2>
+      <p>All selectable reports below use the same 26,414-point frame, exported model hash, WSL2 host, and 20-call protocol. Run zero remains cold; the next 19 calls form the warm distribution. Select a backend to see stage medians and transfer cost.</p>
+      <div class="perf-tabs" id="perf-tabs" role="tablist"></div>
+      <div class="perf-card">
+        <div class="perf-head"><div><span id="perf-label">cuDNN FMA · compact</span><strong id="perf-total">12.313 ms</strong><small>warm median · 19 calls</small></div><div class="perf-secondary"><span>cold <b id="perf-cold">273.781 ms</b></span><span>p95 <b id="perf-p95">14.490 ms</b></span><span>workspace <b id="perf-workspace">239.47 MiB</b></span><span>D2H <b id="perf-d2h">19.89 KiB</b></span></div></div>
+        <div class="stage-chart" id="stage-chart"></div><p class="caption" id="perf-caption">Strict FP32/FMA convolution; compact candidates return to the canonical CPU decoder.</p>
+      </div>
+      <div class="performance-ladder" id="performance-ladder"></div>
+      <aside class="apple-note"><span>Apple M2 · archived strict hybrid</span><strong>249.490 ms</strong><p>Warm raw median on an 8-core M2, 24,000-point synthetic fixture. The full C path was 7017.255 ms; BNNS produced a 28.1× improvement at 6.51e-5 maximum checkpoint error. It is not directly comparable to the WSL fixture above.</p></aside>
+      <p class="caption">Fresh reports recorded 21 July 2026 on an i5-14600KF and RTX 4060 Ti with this source revision. Hardware-specific evidence, never a cross-platform guarantee. Exact hashes and oracle results live in the <a href="EVIDENCE.md">evidence ledger</a>.</p>
+    </section>
+
+    <section>
+      <p class="section-number">06 — Optimization worklog</p><h2>Move less, reuse more, keep the losing experiments.</h2>
+      <div class="worklog">
+        <article><div><span>CPU first BEV layer</span><strong>518.493 → 503.105 ms</strong></div><div class="bars"><i style="--w:100%">dense scatter</i><i class="win" style="--w:97.03%">direct sparse lookup</i></div><p>Removing the canvas saved 64 MiB and 2.97% median time while the checkpoint oracle stayed within 0.0010023.</p></article>
+        <article><div><span>Custom CUDA final heads</span><strong>≈51.3 → 48.49 ms</strong></div><div class="bars"><i style="--w:100%">generic tile + repeated transform</i><i class="win" style="--w:94.5%">one-warp implicit outputs</i></div><p>Final branches produce only 2–12 channels. A one-warp tile stopped preparing unused 64-channel work and removed an 18 MiB transform.</p></article>
+        <article><div><span>Strict NVIDIA provider</span><strong>44.397 → 12.993 ms</strong></div><div class="bars"><i style="--w:100%">custom WMMA raw</i><i class="win" style="--w:29.27%">cuDNN FP32/FMA raw</i></div><p>Tuned forward convolution exposed transposed convolution as the next bottleneck; mapping deblocks to backward-data was the decisive second step.</p></article>
+        <article><div><span>Output boundary</span><strong>15,104 → ≈20 KiB</strong></div><div class="bars"><i style="--w:100%">all 3.87M raw floats</i><i class="win" style="--w:1%">original candidate codes</i></div><p>Compact mode filters logits on device, then preserves the validated CPU geometry and rotated NMS rather than inventing a second decoder.</p></article>
+      </div>
+      <div class="negative-results"><h3>Useful losses</h3><span><b>CUDA Graphs</b> ≈45.13 vs 45.09 ms custom; noise won.</span><span><b>TF32</b> failed allclose, added ≈22.6 MiB, no decisive speedup.</span><span><b>Grouped head middles</b> saved ≈0.3 ms device time, added ≈25 MiB, flat end to end.</span><span><b>Pinned staging</b> regressed after counting its extra host memcpy.</span></div>
+    </section>
+
+    <section>
+      <p class="section-number">07 — Memory</p><h2>The model is small. Activations are not.</h2>
+      <div class="residency"><div class="host"><strong>Host</strong><span>PPW mmap · 23.19 MiB</span><span>pillar slot · ≈26.7 MiB</span><span>two-slot prefetch is bounded</span></div><div class="boundary"><span>features + coords →</span><span>← raw 14.75 MiB</span><span>← compact ≈20 KiB</span></div><div class="device"><strong>Device</strong><span>weights · persistent</span><span>scatter + stages + aliases</span><span>206.97 MiB raw cuDNN capacity</span></div></div>
+      <p>Deblock outputs land directly in three adjacent slices of the 384-channel shared input. This is more than a clever pointer trick: it removes a 24 MiB concatenate copy and makes the final layout an ownership decision rather than a postprocessing step.</p>
+    </section>
+
+    <section id="correctness">
+      <p class="section-number">08 — Correctness</p><h2>Speed has four different proof levels.</h2>
+      <div class="funnel"><span><b>Operator fixtures</b>padding · stride · ReLU · deconv</span><i>↓</i><span><b>Frozen graph</b>3,866,624 raw floats</span><i>↓</i><span><b>Decode semantics</b>boxes · velocity · rotated NMS</span><i>↓</i><span><b>Dataset metric</b>requires official nuScenes evaluation</span></div>
+      <div class="oracle-grid"><article><span>CPU strict</span><strong>1.0023e-3</strong><small>max abs · allclose</small></article><article><span>Custom CUDA precise</span><strong>6.5231e-4</strong><small>max abs · allclose</small></article><article><span>cuDNN FP32/FMA</span><strong>4.9973e-4</strong><small>max abs · allclose</small></article><article class="warn"><span>Custom FP16 WMMA</span><strong>approximate</strong><small>≈0.786 max raw error</small></article></div>
+      <blockquote>Kernel correctness is not graph equivalence, and graph equivalence is not dataset accuracy.</blockquote>
+    </section>
+
+    <section id="build">
+      <p class="section-number">09 — Reproduce it</p><h2>Start with the portable path.</h2>
+      <ol class="steps"><li><span>1</span><div><h3>Export the frozen checkpoint</h3><pre><code>mkdir -p ckpts
+# place pp_multihead_nds5823_updated.pth in ckpts/
+make setup-model
+make model PYTHON=.venv/bin/python</code></pre><p>PyTorch and PyYAML are offline export dependencies only.</p></div></li><li><span>2</span><div><h3>Build and test C11</h3><pre><code>make
+make test PYTHON=.venv/bin/python
+make portable-test PYTHON=.venv/bin/python</code></pre><p>Linux/WSL uses OpenMP; macOS selects Accelerate/BNNS without Homebrew OpenMP.</p></div></li><li><span>3</span><div><h3>Prepare ten nuScenes sweeps</h3><pre><code>make prepare-data PYTHON=.venv/bin/python
+frame=$(find /data/nuscenes/pointpillars_10sweep \
+  -name '*.bin' -type f | sort | head -1)</code></pre><p>The devkit constructs time lag and transforms sweeps into the keyframe LiDAR frame.</p></div></li><li><span>4</span><div><h3>Measure and validate</h3><pre><code>make perf-cpu PERF_FRAME="$frame" PERF_REPS=20
+make cuda CUDA_ARCH=sm_89
+make cudnn CUDA_ARCH=sm_89
+make checkpoint-oracle PERF_FRAME="$frame"</code></pre><p>Use the target GPU architecture; Jetson Orin commonly uses <code>sm_87</code>.</p></div></li></ol>
+      <div class="platforms"><span><b>WSL / Linux</b>OpenMP · AVX2 · CUDA · cuDNN</span><span><b>macOS</b>C11 · Accelerate · BNNS</span><span><b>Jetson</b>portable CPU · JetPack CUDA/cuDNN</span></div>
+      <p>Continue through the <a href="https://github.com/hova88/pointpillars.c/wiki">engineering wiki</a>, inspect the <a href="model-summary.md">full model table</a>, or follow the <a href="PUBLISHING.md">site reproduction guide</a>.</p>
+    </section>
+
+    <section><p class="section-number">10 — What remains</p><h2>The next win must beat 12.313 ms end to end.</h2><p>Potential work includes multi-frame H2D overlap, cuDNN frontend fusion, architecture-specific Jetson kernels, and task-calibrated reduced precision. Each changes scheduling, memory, or numeric behavior; none earns promotion from a microbenchmark alone.</p><div class="definition"><strong>rule</strong><span>Optimize the measured bottleneck on a named fixture, preserve a strict route, and publish the regression as carefully as the win.</span></div></section>
+  </article></main>
+
+  <footer><div><img src="pointpillars-mark.svg" width="28" alt=""><strong>PointPillars.c</strong></div><p>A dependency-free static article. Teaching mechanics inspired by Simon Boehm’s <a href="https://siboehm.com/articles/22/CUDA-MMM">CUDA matmul worklog</a>; all prose, diagrams, and measurements are original to this project.</p><p><a href="https://github.com/hova88/pointpillars.c#readme">README</a> · <a href="https://github.com/hova88/pointpillars.c/wiki">Wiki</a> · <a href="model-summary.md">Model summary</a> · <a href="EVIDENCE.md">Evidence</a></p><p><small>¹ Fresh cuDNN compact warm median on one RTX 4060 Ti. ² Reference frame at the documented score/NMS settings.</small></p></footer>
+</body>
+</html>

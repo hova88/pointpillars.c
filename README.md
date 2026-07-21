@@ -4,6 +4,13 @@ A small, auditable C11 runtime for the OpenPCDet nuScenes PointPillars
 MultiHead checkpoint. It turns ten lidar sweeps into 3D detections without
 Python at runtime, and runs natively on macOS, Linux, and WSL.
 
+**[Read the visual technical article →](https://hova88.github.io/pointpillars.c/)**
+
+The article walks through every tensor boundary, the 93 learned operators,
+memory residency, correctness levels, and five measured CPU/CUDA/cuDNN routes.
+Its interactive model explorer is also available as a generated
+[plain-Markdown summary](docs/model-summary.md).
+
 [![PointPillars terminal viewer](docs/pointpillars-tui.gif)](docs/pointpillars-tui.mp4)
 
 *The GIF plays directly on GitHub; click it for the original MP4.*
@@ -99,8 +106,10 @@ make checkpoint-oracle PERF_FRAME="$frame"
 
 ## Documentation
 
-The README is the entry point; implementation and measurement detail lives in
-the wiki:
+The README is the entry point. The
+[visual systems walkthrough](https://hova88.github.io/pointpillars.c/) teaches
+the pipeline in one page; implementation and measurement detail lives in the
+wiki:
 
 - [system walkthrough](wiki/Home.md)
 - [model contract](wiki/01-model-contract.md)
@@ -110,6 +119,17 @@ the wiki:
 - [correctness funnel](wiki/09-validation.md)
 - [performance workflow](wiki/11-performance-workflow.md)
 - [macOS + real nuScenes mini review](wiki/13-local-macos-nuscenes-mini.md)
+
+The article is plain HTML/CSS/JavaScript under `docs/`. Validate it without a
+checkpoint or Python packages:
+
+```sh
+make site-check
+python3 -m http.server 8000 --directory docs
+```
+
+See [docs/PUBLISHING.md](docs/PUBLISHING.md) to regenerate the checked model
+inventory and benchmark bundle.
 
 ## License
 

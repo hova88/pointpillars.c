@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+  <title>PointPillars.c mark</title>
+  <desc>Three vertical pillars rise from a metric grid.</desc>
+  <path d="M8 48h48M12 55h40M17 41h30" fill="none" stroke="#b9c3cf" stroke-width="3" stroke-linecap="round"/>
+  <path d="M17 41V24l8-4v21M29 41V10l8 4v27M41 41V18l7 4v19" fill="#eef5ff" stroke="#1769e0" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="21" cy="18" r="3" fill="#ef8354"/><circle cx="44" cy="13" r="2.5" fill="#ef8354"/><circle cx="52" cy="30" r="2" fill="#ef8354"/>
+</svg>

@@ -1,0 +1,26 @@
+name: Portable core
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  dependency-free-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compile operator fixtures
+        run: make build/test_voxel build/test_decode build/test_cpu_conv build/test_tui
+      - name: Run operator fixtures
+        run: |
+          ./build/test_voxel
+          ./build/test_decode
+          ./build/test_cpu_conv
+          ./build/test_tui
+      - name: Validate generated site data
+        run: make site-check

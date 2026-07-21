@@ -1,0 +1,2409 @@
+{
+  "schema_version": 1,
+  "model": {
+    "file": "nuscenes_multihead.ppw",
+    "sha256": "ffbd7307bc98310a96859713570c448dcc375b4c5dbc6be45eabad9079eeaad4",
+    "file_bytes": 24316160,
+    "payload_bytes": 24293276,
+    "tensors": 190,
+    "elements": 6073319
+  },
+  "config": {
+    "file": "cfgs/pointpillars.yaml",
+    "sha256": "87a83492875d29b65f7a83db7e7a6f9185c56118f7e26f05faff56007a8b0eba",
+    "openpcdet_commit": "233f849829b6ac19afb8af8837a0246890908755",
+    "openpcdet_config": "https://github.com/open-mmlab/OpenPCDet/blob/233f849829b6ac19afb8af8837a0246890908755/tools/cfgs/nuscenes_models/cbgs_pp_multihead.yaml"
+  },
+  "summary": {
+    "modules": 97,
+    "learned_operators": 93,
+    "convolution_gmac": 66.786
+  },
+  "flow": [
+    {
+      "id": "points",
+      "operator": "Ten-sweep points",
+      "shape": "float32 [N, 5]",
+      "note": "x, y, z, intensity, time lag"
+    },
+    {
+      "id": "voxel",
+      "operator": "Pillarize",
+      "shape": "[P, 20, 11] + coords [P, 4]",
+      "note": "P ≤ 30,000; 0.2 m XY cells"
+    },
+    {
+      "id": "pfn",
+      "operator": "PFN",
+      "shape": "[P, 64]",
+      "note": "folded linear + ReLU + max over 20 points"
+    },
+    {
+      "id": "bev",
+      "operator": "Sparse BEV boundary",
+      "shape": "CPU [64, P] · CUDA [1, 64, 512, 512]",
+      "note": "implicit zeros or 64 MiB scatter"
+    },
+    {
+      "id": "backbone0",
+      "operator": "Backbone 0",
+      "shape": "[1, 64, 256, 256]",
+      "note": "stride 2 + three 3×3 convolutions"
+    },
+    {
+      "id": "backbone1",
+      "operator": "Backbone 1",
+      "shape": "[1, 128, 128, 128]",
+      "note": "stride 2 + five 3×3 convolutions"
+    },
+    {
+      "id": "backbone2",
+      "operator": "Backbone 2",
+      "shape": "[1, 256, 64, 64]",
+      "note": "stride 2 + five 3×3 convolutions"
+    },
+    {
+      "id": "deblocks",
+      "operator": "Three deblocks",
+      "shape": "3 × [1, 128, 128, 128]",
+      "note": "downsample · identity · upsample"
+    },
+    {
+      "id": "concat",
+      "operator": "Aliased concat",
+      "shape": "[1, 384, 128, 128]",
+      "note": "three destinations already occupy adjacent slices"
+    },
+    {
+      "id": "shared",
+      "operator": "Shared convolution",
+      "shape": "[1, 64, 128, 128]",
+      "note": "common input for 36 branch middles"
+    },
+    {
+      "id": "heads",
+      "operator": "Six multi-head groups",
+      "shape": "[1, 236, 128, 128]",
+      "note": "class + 10 regression codes per anchor"
+    },
+    {
+      "id": "decode",
+      "operator": "Decode + rotated NMS",
+      "shape": "≤ 830 pp_box values",
+      "note": "109 detections on the reference frame"
+    }
+  ],
+  "groups": [
+    {
+      "id": "pfn",
+      "title": "Pillar feature network",
+      "prefix": "pfn.",
+      "description": "11 features become one 64-channel vector per live pillar",
+      "gmac": 0.0,
+      "modules": 1,
+      "tensors": 2,
+      "elements": 768,
+      "operators": {
+        "PFN affine + max": 1
+      }
+    },
+    {
+      "id": "backbone",
+      "title": "BEV backbone",
+      "prefix": "backbone.",
+      "description": "Sixteen dense 3×3 convolutions across three scales",
+      "gmac": 36.239,
+      "modules": 16,
+      "tensors": 32,
+      "elements": 4205056,
+      "operators": {
+        "Conv2d": 16
+      }
+    },
+    {
+      "id": "deblocks",
+      "title": "Deblocks",
+      "prefix": "deblock.",
+      "description": "Normalize all scales to 128×128 and 128 channels",
+      "gmac": 2.953,
+      "modules": 3,
+      "tensors": 6,
+      "elements": 180608,
+      "operators": {
+        "Conv2d": 2,
+        "ConvTranspose2d": 1
+      }
+    },
+    {
+      "id": "shared",
+      "title": "Shared feature",
+      "prefix": "shared.",
+      "description": "One 384→64 convolution shared by every prediction branch",
+      "gmac": 3.624,
+      "modules": 1,
+      "tensors": 2,
+      "elements": 221248,
+      "operators": {
+        "Conv2d": 1
+      }
+    },
+    {
+      "id": "heads",
+      "title": "Multi-head predictions",
+      "prefix": "head.",
+      "description": "Six groups × six branches × middle/output convolution",
+      "gmac": 23.97,
+      "modules": 72,
+      "tensors": 144,
+      "elements": 1465580,
+      "operators": {
+        "Conv2d": 72
+      }
+    },
+    {
+      "id": "metadata",
+      "title": "Frozen metadata",
+      "prefix": "meta.",
+      "description": "Range, voxel geometry, anchors and class labels",
+      "gmac": 0.0,
+      "modules": 4,
+      "tensors": 4,
+      "elements": 59,
+      "operators": {
+        "Frozen metadata": 4
+      }
+    }
+  ],
+  "modules": [
+    {
+      "name": "pfn",
+      "group": "pfn",
+      "operator": "PFN affine + max",
+      "tensor_names": [
+        "pfn.weight",
+        "pfn.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          11
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 768,
+      "bytes": 3072
+    },
+    {
+      "name": "backbone.0.0",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.0.0.weight",
+        "backbone.0.0.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "backbone.0.1",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.0.1.weight",
+        "backbone.0.1.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "backbone.0.2",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.0.2.weight",
+        "backbone.0.2.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "backbone.0.3",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.0.3.weight",
+        "backbone.0.3.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "backbone.1.0",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.0.weight",
+        "backbone.1.0.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          64,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 73856,
+      "bytes": 295424
+    },
+    {
+      "name": "backbone.1.1",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.1.weight",
+        "backbone.1.1.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 147584,
+      "bytes": 590336
+    },
+    {
+      "name": "backbone.1.2",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.2.weight",
+        "backbone.1.2.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 147584,
+      "bytes": 590336
+    },
+    {
+      "name": "backbone.1.3",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.3.weight",
+        "backbone.1.3.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 147584,
+      "bytes": 590336
+    },
+    {
+      "name": "backbone.1.4",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.4.weight",
+        "backbone.1.4.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 147584,
+      "bytes": 590336
+    },
+    {
+      "name": "backbone.1.5",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.1.5.weight",
+        "backbone.1.5.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          3,
+          3
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 147584,
+      "bytes": 590336
+    },
+    {
+      "name": "backbone.2.0",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.0.weight",
+        "backbone.2.0.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          128,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 295168,
+      "bytes": 1180672
+    },
+    {
+      "name": "backbone.2.1",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.1.weight",
+        "backbone.2.1.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          256,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 590080,
+      "bytes": 2360320
+    },
+    {
+      "name": "backbone.2.2",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.2.weight",
+        "backbone.2.2.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          256,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 590080,
+      "bytes": 2360320
+    },
+    {
+      "name": "backbone.2.3",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.3.weight",
+        "backbone.2.3.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          256,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 590080,
+      "bytes": 2360320
+    },
+    {
+      "name": "backbone.2.4",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.4.weight",
+        "backbone.2.4.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          256,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 590080,
+      "bytes": 2360320
+    },
+    {
+      "name": "backbone.2.5",
+      "group": "backbone",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "backbone.2.5.weight",
+        "backbone.2.5.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          256,
+          3,
+          3
+        ],
+        [
+          256
+        ]
+      ],
+      "elements": 590080,
+      "bytes": 2360320
+    },
+    {
+      "name": "deblock.0",
+      "group": "deblocks",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "deblock.0.weight",
+        "deblock.0.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          64,
+          2,
+          2
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 32896,
+      "bytes": 131584
+    },
+    {
+      "name": "deblock.1",
+      "group": "deblocks",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "deblock.1.weight",
+        "deblock.1.bias"
+      ],
+      "tensor_shapes": [
+        [
+          128,
+          128,
+          1,
+          1
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 16512,
+      "bytes": 66048
+    },
+    {
+      "name": "deblock.2",
+      "group": "deblocks",
+      "operator": "ConvTranspose2d",
+      "tensor_names": [
+        "deblock.2.weight",
+        "deblock.2.bias"
+      ],
+      "tensor_shapes": [
+        [
+          256,
+          128,
+          2,
+          2
+        ],
+        [
+          128
+        ]
+      ],
+      "elements": 131200,
+      "bytes": 524800
+    },
+    {
+      "name": "shared",
+      "group": "shared",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "shared.weight",
+        "shared.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          384,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 221248,
+      "bytes": 884992
+    },
+    {
+      "name": "head.0.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.cls.mid.weight",
+        "head.0.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.cls.out.weight",
+        "head.0.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          2,
+          64,
+          3,
+          3
+        ],
+        [
+          2
+        ]
+      ],
+      "elements": 1154,
+      "bytes": 4616
+    },
+    {
+      "name": "head.0.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.reg.mid.weight",
+        "head.0.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.reg.out.weight",
+        "head.0.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.0.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.height.mid.weight",
+        "head.0.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.height.out.weight",
+        "head.0.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          2,
+          64,
+          3,
+          3
+        ],
+        [
+          2
+        ]
+      ],
+      "elements": 1154,
+      "bytes": 4616
+    },
+    {
+      "name": "head.0.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.size.mid.weight",
+        "head.0.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.size.out.weight",
+        "head.0.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          6,
+          64,
+          3,
+          3
+        ],
+        [
+          6
+        ]
+      ],
+      "elements": 3462,
+      "bytes": 13848
+    },
+    {
+      "name": "head.0.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.angle.mid.weight",
+        "head.0.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.angle.out.weight",
+        "head.0.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.0.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.velo.mid.weight",
+        "head.0.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.0.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.0.velo.out.weight",
+        "head.0.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.1.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.cls.mid.weight",
+        "head.1.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.cls.out.weight",
+        "head.1.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.1.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.reg.mid.weight",
+        "head.1.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.reg.out.weight",
+        "head.1.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.1.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.height.mid.weight",
+        "head.1.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.height.out.weight",
+        "head.1.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.1.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.size.mid.weight",
+        "head.1.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.size.out.weight",
+        "head.1.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          12,
+          64,
+          3,
+          3
+        ],
+        [
+          12
+        ]
+      ],
+      "elements": 6924,
+      "bytes": 27696
+    },
+    {
+      "name": "head.1.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.angle.mid.weight",
+        "head.1.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.angle.out.weight",
+        "head.1.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.1.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.velo.mid.weight",
+        "head.1.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.1.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.1.velo.out.weight",
+        "head.1.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.2.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.cls.mid.weight",
+        "head.2.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.cls.out.weight",
+        "head.2.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.2.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.reg.mid.weight",
+        "head.2.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.reg.out.weight",
+        "head.2.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.2.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.height.mid.weight",
+        "head.2.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.height.out.weight",
+        "head.2.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.2.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.size.mid.weight",
+        "head.2.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.size.out.weight",
+        "head.2.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          12,
+          64,
+          3,
+          3
+        ],
+        [
+          12
+        ]
+      ],
+      "elements": 6924,
+      "bytes": 27696
+    },
+    {
+      "name": "head.2.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.angle.mid.weight",
+        "head.2.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.angle.out.weight",
+        "head.2.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.2.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.velo.mid.weight",
+        "head.2.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.2.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.2.velo.out.weight",
+        "head.2.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.3.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.cls.mid.weight",
+        "head.3.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.cls.out.weight",
+        "head.3.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          2,
+          64,
+          3,
+          3
+        ],
+        [
+          2
+        ]
+      ],
+      "elements": 1154,
+      "bytes": 4616
+    },
+    {
+      "name": "head.3.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.reg.mid.weight",
+        "head.3.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.reg.out.weight",
+        "head.3.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.3.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.height.mid.weight",
+        "head.3.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.height.out.weight",
+        "head.3.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          2,
+          64,
+          3,
+          3
+        ],
+        [
+          2
+        ]
+      ],
+      "elements": 1154,
+      "bytes": 4616
+    },
+    {
+      "name": "head.3.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.size.mid.weight",
+        "head.3.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.size.out.weight",
+        "head.3.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          6,
+          64,
+          3,
+          3
+        ],
+        [
+          6
+        ]
+      ],
+      "elements": 3462,
+      "bytes": 13848
+    },
+    {
+      "name": "head.3.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.angle.mid.weight",
+        "head.3.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.angle.out.weight",
+        "head.3.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.3.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.velo.mid.weight",
+        "head.3.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.3.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.3.velo.out.weight",
+        "head.3.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.4.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.cls.mid.weight",
+        "head.4.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.cls.out.weight",
+        "head.4.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.4.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.reg.mid.weight",
+        "head.4.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.reg.out.weight",
+        "head.4.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.4.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.height.mid.weight",
+        "head.4.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.height.out.weight",
+        "head.4.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.4.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.size.mid.weight",
+        "head.4.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.size.out.weight",
+        "head.4.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          12,
+          64,
+          3,
+          3
+        ],
+        [
+          12
+        ]
+      ],
+      "elements": 6924,
+      "bytes": 27696
+    },
+    {
+      "name": "head.4.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.angle.mid.weight",
+        "head.4.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.angle.out.weight",
+        "head.4.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.4.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.velo.mid.weight",
+        "head.4.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.4.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.4.velo.out.weight",
+        "head.4.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.5.cls.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.cls.mid.weight",
+        "head.5.cls.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.cls.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.cls.out.weight",
+        "head.5.cls.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.5.reg.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.reg.mid.weight",
+        "head.5.reg.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.reg.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.reg.out.weight",
+        "head.5.reg.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.5.height.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.height.mid.weight",
+        "head.5.height.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.height.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.height.out.weight",
+        "head.5.height.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          4,
+          64,
+          3,
+          3
+        ],
+        [
+          4
+        ]
+      ],
+      "elements": 2308,
+      "bytes": 9232
+    },
+    {
+      "name": "head.5.size.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.size.mid.weight",
+        "head.5.size.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.size.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.size.out.weight",
+        "head.5.size.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          12,
+          64,
+          3,
+          3
+        ],
+        [
+          12
+        ]
+      ],
+      "elements": 6924,
+      "bytes": 27696
+    },
+    {
+      "name": "head.5.angle.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.angle.mid.weight",
+        "head.5.angle.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.angle.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.angle.out.weight",
+        "head.5.angle.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "head.5.velo.mid",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.velo.mid.weight",
+        "head.5.velo.mid.bias"
+      ],
+      "tensor_shapes": [
+        [
+          64,
+          64,
+          3,
+          3
+        ],
+        [
+          64
+        ]
+      ],
+      "elements": 36928,
+      "bytes": 147712
+    },
+    {
+      "name": "head.5.velo.out",
+      "group": "heads",
+      "operator": "Conv2d",
+      "tensor_names": [
+        "head.5.velo.out.weight",
+        "head.5.velo.out.bias"
+      ],
+      "tensor_shapes": [
+        [
+          8,
+          64,
+          3,
+          3
+        ],
+        [
+          8
+        ]
+      ],
+      "elements": 4616,
+      "bytes": 18464
+    },
+    {
+      "name": "meta.range",
+      "group": "metadata",
+      "operator": "Frozen metadata",
+      "tensor_names": [
+        "meta.range"
+      ],
+      "tensor_shapes": [
+        [
+          6
+        ]
+      ],
+      "elements": 6,
+      "bytes": 24
+    },
+    {
+      "name": "meta.voxel",
+      "group": "metadata",
+      "operator": "Frozen metadata",
+      "tensor_names": [
+        "meta.voxel"
+      ],
+      "tensor_shapes": [
+        [
+          3
+        ]
+      ],
+      "elements": 3,
+      "bytes": 12
+    },
+    {
+      "name": "meta.anchor",
+      "group": "metadata",
+      "operator": "Frozen metadata",
+      "tensor_names": [
+        "meta.anchor"
+      ],
+      "tensor_shapes": [
+        [
+          10,
+          4
+        ]
+      ],
+      "elements": 40,
+      "bytes": 160
+    },
+    {
+      "name": "meta.labels",
+      "group": "metadata",
+      "operator": "Frozen metadata",
+      "tensor_names": [
+        "meta.labels"
+      ],
+      "tensor_shapes": [
+        [
+          10
+        ]
+      ],
+      "elements": 10,
+      "bytes": 40
+    }
+  ],
+  "performance": {
+    "fixture": {
+      "accepted": 23741,
+      "clipped": 2424,
+      "dropped": 0,
+      "pillars": 7854,
+      "points": 26414
+    },
+    "point_sha256": "0596eb2c7bb6ccf1af3817972416979567a187719b99276bc9cf9912ae63fc2d",
+    "model_sha256": "ffbd7307bc98310a96859713570c448dcc375b4c5dbc6be45eabad9079eeaad4",
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i5-14600KF",
+      "cpu_governor": null,
+      "gpu": "NVIDIA GeForce RTX 4060 Ti, 610.62, 16380 MiB",
+      "logical_cpus": 16,
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35"
+    },
+    "reports": [
+      {
+        "id": "cpu",
+        "name": "CPU · OpenMP/AVX2 raw",
+        "timestamp_utc": "2026-07-21T12:13:20.524824+00:00",
+        "backend": "cpu",
+        "output_mode": "raw",
+        "repetitions": 20,
+        "warmup_runs": 1,
+        "cold_ms": 547.285,
+        "warm_median_ms": 504.051,
+        "warm_p95_ms": 585.1311999999998,
+        "stages_ms": {
+          "pfn": 2.138,
+          "scatter": 0.0,
+          "backbone": 364.122,
+          "heads": 136.389
+        },
+        "workspace_bytes": 69119488,
+        "device_to_host_bytes": 0,
+        "binary_sha256": "7631a9b4607ab7dfb36d1bb2d3467b08b0e27dc4db27fb4d858bd3c298a8d0ed"
+      },
+      {
+        "id": "cuda_raw",
+        "name": "Custom CUDA · raw",
+        "timestamp_utc": "2026-07-21T12:13:25.128180+00:00",
+        "backend": "cuda",
+        "output_mode": "raw",
+        "repetitions": 20,
+        "warmup_runs": 1,
+        "cold_ms": 171.92,
+        "warm_median_ms": 47.591,
+        "warm_p95_ms": 51.0988,
+        "stages_ms": {
+          "pfn": 0.108,
+          "scatter": 0.082,
+          "backbone": 32.068,
+          "heads": 9.945
+        },
+        "workspace_bytes": 239560768,
+        "device_to_host_bytes": 15466496,
+        "binary_sha256": "bf7607aa3650b9744997f38142b5fb912e0974ceb07652ef4bfaead966f8fe3a"
+      },
+      {
+        "id": "cuda_compact",
+        "name": "Custom CUDA · compact",
+        "timestamp_utc": "2026-07-21T12:13:26.579951+00:00",
+        "backend": "cuda",
+        "output_mode": "compact",
+        "repetitions": 20,
+        "warmup_runs": 1,
+        "cold_ms": 161.097,
+        "warm_median_ms": 46.405,
+        "warm_p95_ms": 47.037800000000004,
+        "stages_ms": {
+          "pfn": 0.108,
+          "scatter": 0.082,
+          "backbone": 32.004,
+          "heads": 9.994
+        },
+        "workspace_bytes": 273639528,
+        "device_to_host_bytes": 20320,
+        "binary_sha256": "bf7607aa3650b9744997f38142b5fb912e0974ceb07652ef4bfaead966f8fe3a"
+      },
+      {
+        "id": "cudnn_raw",
+        "name": "cuDNN FMA · raw",
+        "timestamp_utc": "2026-07-21T12:15:20.819616+00:00",
+        "backend": "cuda",
+        "output_mode": "raw",
+        "repetitions": 20,
+        "warmup_runs": 1,
+        "cold_ms": 634.38,
+        "warm_median_ms": 14.161,
+        "warm_p95_ms": 15.4691,
+        "stages_ms": {
+          "pfn": 0.11,
+          "scatter": 0.083,
+          "backbone": 6.273,
+          "heads": 4.057
+        },
+        "workspace_bytes": 217028224,
+        "device_to_host_bytes": 15466496,
+        "binary_sha256": "177d80d109049c2698d36c10b585775a23a6b8052ae1cdece632fb20f3eae755"
+      },
+      {
+        "id": "cudnn_compact",
+        "name": "cuDNN FMA · compact",
+        "timestamp_utc": "2026-07-21T12:15:21.752548+00:00",
+        "backend": "cuda",
+        "output_mode": "compact",
+        "repetitions": 20,
+        "warmup_runs": 1,
+        "cold_ms": 273.781,
+        "warm_median_ms": 12.313,
+        "warm_p95_ms": 14.490299999999998,
+        "stages_ms": {
+          "pfn": 0.105,
+          "scatter": 0.082,
+          "backbone": 5.899,
+          "heads": 3.793
+        },
+        "workspace_bytes": 251106984,
+        "device_to_host_bytes": 20372,
+        "binary_sha256": "177d80d109049c2698d36c10b585775a23a6b8052ae1cdece632fb20f3eae755"
+      }
+    ]
+  }
+}

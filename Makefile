@@ -42,7 +42,7 @@ CUDA_OBJDIR := build/cuda/$(CUDA_CONFIG_ID)
 CUDNN_BINARY := build/pointpillars_cudnn.$(CUDNN_CONFIG_ID)
 CUDNN_OBJDIR := build/cudnn/$(CUDNN_CONFIG_ID)
 
-.PHONY: all model setup-model cuda cudnn cudnn-test test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn clean FORCE
+.PHONY: all model setup-model cuda cudnn cudnn-test test portable-test perf perf-cpu perf-cuda perf-cuda-compact perf-cudnn perf-cudnn-compact prepare-data checkpoint-oracle checkpoint-oracle-cuda checkpoint-oracle-cudnn site-data site-check clean FORCE
 all: build/pointpillars
 cuda: build/pointpillars_cuda
 cudnn: build/pointpillars_cudnn
@@ -176,6 +176,18 @@ checkpoint-oracle-cudnn: test build/pointpillars_cudnn
 	@test -n "$(PERF_FRAME)" || { echo "PERF_FRAME is required (no prepared nuScenes frame found)" >&2; exit 2; }
 	PP_CUDA_PRECISE=1 ./build/pointpillars_cudnn infer-cuda $(MODEL) "$(PERF_FRAME)" /tmp/nuscenes_cudnn.ppout 5
 	$(PYTHON) tools/oracle_checkpoint.py $(CHECKPOINT) "$(PERF_FRAME)" /tmp/nuscenes_cudnn.ppout
+
+site-data: $(MODEL)
+	$(PYTHON) tools/build_site_data.py --model $(MODEL) --config $(CONFIG) \
+		--report cpu=build/perf/cpu.json \
+		--report cuda_raw=build/perf/cuda.json \
+		--report cuda_compact=build/perf/cuda-compact.json \
+		--report cudnn_raw=build/perf/cudnn.json \
+		--report cudnn_compact=build/perf/cudnn-compact.json
+
+site-check:
+	$(PYTHON) tests/test_site_data.py
+	$(PYTHON) scripts/check_site.py
 
 clean:
 	rm -rf build
